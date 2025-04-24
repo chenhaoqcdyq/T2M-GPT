@@ -27,7 +27,7 @@ class VQMotionDataset(data.Dataset):
             self.joints_num = 22
             self.max_motion_length = 196
             self.meta_dir = 'checkpoints/t2m/VQVAEV3_CB1024_CMT_H1024_NRES3/meta'
-            self.text_mask_dir = pjoin(self.data_root, 'texts_mask_deepseek')
+            
 
         elif dataset_name == 'kit':
             self.data_root = './dataset/KIT-ML'
@@ -37,8 +37,8 @@ class VQMotionDataset(data.Dataset):
 
             self.max_motion_length = 196
             self.meta_dir = 'checkpoints/kit/VQVAEV3_CB1024_CMT_H1024_NRES3/meta'
-            self.text_mask_dir = pjoin(self.data_root, 'texts_mask_deepseek')
-        
+            # self.text_mask_dir = pjoin(self.data_root, 'texts_mask_deepseek')
+        self.text_mask_dir = pjoin(self.data_root, 'texts_mask_deepseek')
         joints_num = self.joints_num
 
         mean = np.load(pjoin(self.meta_dir, 'mean.npy'))

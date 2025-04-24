@@ -63,6 +63,7 @@ def get_args_parser():
     parser.add_argument('--seed', default=123, type=int, help='seed for initializing training. ')
     parser.add_argument("--if-maxtest", action='store_true', help="test in max")
     parser.add_argument('--pkeep', type=float, default=1.0, help='keep rate for gpt training')
-    
+    parser.add_argument('--all_motion', type=int, default=1, help='use all motion')
+    parser.add_argument('--lgvq', type=int, default=1, help='use lgvq')
     
     return parser.parse_args()

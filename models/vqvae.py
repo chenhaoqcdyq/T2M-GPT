@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 from models.encdec import Dualsem_encoderv3, Encoder, Decoder, Encoder_Transformer, Decoder_wo_upsample
 from models.quantize_cnn import QuantizeEMAReset, Quantizer, QuantizeEMA, QuantizeReset
@@ -60,10 +61,15 @@ class VQVAE_251(nn.Module):
         x_in = self.preprocess(x)   # torch.Size([1, 263, 104])
         x_encoder = self.encoder(x_in) 
         x_encoder = self.postprocess(x_encoder)  # torch.Size([1, 512, 26])
-        x_encoder = x_encoder.contiguous().view(-1, x_encoder.shape[-1])  # (NT, C)
-        code_idx = self.quantizer.quantize(x_encoder)   # torch.Size([26, 512])
+        
+        x_encoder_ = x_encoder.contiguous().view(-1, x_encoder.shape[-1])  # (NT, C)
+        code_idx = self.quantizer.quantize(x_encoder_)   # torch.Size([26, 512])
         code_idx = code_idx.view(N, -1)
-        return code_idx
+        if self.lgvq == 1:
+            sem_idx = self.lgvq_encoder.encode(x_encoder)
+            return code_idx, sem_idx
+        else:
+            return code_idx
 
 
     def forward(self, x, motion_mask = None, text_mask = None, text_id = None):
@@ -76,7 +82,7 @@ class VQVAE_251(nn.Module):
             contrastive_loss, mlm_loss = loss_lgvq
             loss_sem, perplexity_sem = sem_quantized
         else:
-            contrastive_loss, mlm_loss, loss_sem, perplexity_sem = 0, 0, 0, 0
+            contrastive_loss, mlm_loss, loss_sem, perplexity_sem = torch.tensor(0), torch.tensor(0), torch.tensor(0), torch.tensor(0)
         ## quantization
         x_quantized, loss, perplexity  = self.quantizer(x_encoder)
 

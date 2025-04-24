@@ -58,7 +58,7 @@ def get_args_parser():
     parser.add_argument('--nb-vis', default=20, type=int, help='nb of visualizations')
     parser.add_argument('--all_motion', default=0, type=int, help='if use all motion')
     parser.add_argument('--lgvq', default=0, type=int, help='if use lgvq')
-    parser.add_argument('--loss-contrastive', default=0.5, type=float, help='loss contrastive')
-    parser.add_argument('--loss-mlm', default=0.5, type=float, help='loss mlm')
+    parser.add_argument('--loss-contrastive', default=0.1, type=float, help='loss contrastive')
+    parser.add_argument('--loss-mlm', default=0.1, type=float, help='loss mlm')
     
     return parser.parse_args()

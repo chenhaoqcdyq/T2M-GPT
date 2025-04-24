@@ -169,7 +169,7 @@ for nb_iter in range(1, args.warm_up_iter):
 
 ##### ---- Training ---- #####
 avg_recons, avg_perplexity, avg_commit, avg_contrastive, avg_mlm = 0., 0., 0., 0., 0.
-best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_vqvae(args.run_dir, val_loader, net, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, eval_wrapper=eval_wrapper, draw=False)
+best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger, best_mpjpe = eval_trans.evaluation_vqvae(args.run_dir, val_loader, net, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, eval_wrapper=eval_wrapper, draw=False, best_mpjpe=100)
 
 for nb_iter in range(1, args.total_iter + 1):
     
@@ -220,5 +220,5 @@ for nb_iter in range(1, args.total_iter + 1):
         avg_recons, avg_perplexity, avg_commit, avg_contrastive, avg_mlm = 0., 0., 0., 0., 0.
 
     if nb_iter % args.eval_iter==0 :
-        best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_vqvae(args.run_dir, val_loader, net, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, eval_wrapper=eval_wrapper)
+        best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger, best_mpjpe = eval_trans.evaluation_vqvae(args.run_dir, val_loader, net, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, eval_wrapper=eval_wrapper, best_mpjpe=best_mpjpe)
         

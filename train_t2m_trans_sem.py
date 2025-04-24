@@ -64,7 +64,7 @@ net = vqvae.HumanVQVAE(args, ## use args to define different parameters in diffe
                        args.depth,
                        args.dilation_growth_rate,
                        args.vq_act,
-                       args.vq_norm,
+                    #    args.vq_norm,
                        enc='transformer',
                        lgvq=args.lgvq)
 
@@ -104,14 +104,23 @@ right_num = 0
 nb_sample_train = 0
 
 # ##### ---- get code ---- #####
-# for batch in train_loader_token:
-#     pose, name = batch
-#     bs, seq = pose.shape[0], pose.shape[1]
+for batch in train_loader_token:
+    pose, name = batch
+    bs, seq = pose.shape[0], pose.shape[1]
 
-#     pose = pose.cuda().float() # bs, nb_joints, joints_dim, seq_len (1,124,263)
-#     target = net.encode(pose)
-#     target = target.cpu().numpy() # (1, x)
-#     np.save(pjoin(args.vq_dir, name[0] +'.npy'), target)
+    pose = pose.cuda().float() # bs, nb_joints, joints_dim, seq_len (1,124,263)
+    target = net.encode(pose)
+    if isinstance(target, tuple):
+        motion_idx = target[0]
+        sem_idx = target[1]
+    else:
+        motion_idx = target
+        sem_idx = None
+    motion_idx = motion_idx.cpu().numpy() # (1, x)
+    np.save(pjoin(args.vq_dir, name[0] +'.npy'), motion_idx)
+    if sem_idx is not None:
+        sem_idx = sem_idx.cpu().numpy() # (1, x)
+        np.save(pjoin(args.vq_dir, name[0] +'_sem.npy'), sem_idx)
 
 
 train_loader = dataset_TM_train.DATALoader(args.dataname, args.batch_size, args.nb_code, args.vq_name, unit_length=2**args.down_t)
