@@ -191,7 +191,7 @@ def evaluation_vqvae(out_dir, val_loader, net, logger, writer, nb_iter, best_fid
         torch.save({'net' : net.state_dict()}, os.path.join(out_dir, 'net_last.pth'))
 
     net.train()
-    return best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger
+    return best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger, best_mpjpe
 
 
 @torch.no_grad()        
