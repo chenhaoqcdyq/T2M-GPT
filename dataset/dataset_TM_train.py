@@ -59,8 +59,8 @@ class Text2MotionDataset(data.Dataset):
         data_dict = {}
         for name in tqdm(id_list):
             try:
-                m_token_list = np.load(pjoin(self.data_root, tokenizer_name, '%s.npy'%name))
-
+                m_token_list = np.load(pjoin(self.data_root, tokenizer_name, '%s.npz'%name))
+                m_token_list = m_token_list['motion']
                 # Read text
                 with cs.open(pjoin(self.text_dir, name + '.txt')) as f:
                     text_data = []

@@ -122,17 +122,18 @@ class Text2MotionDataset(data.Dataset):
         caption= text_data['caption']
 
         
-        coin = np.random.choice([False, False, True])
-        # print(len(m_tokens))
-        if coin:
-            # drop one token at the head or tail
-            coin2 = np.random.choice([True, False])
-            if coin2:
-                m_tokens = m_tokens[:-1]
-            else:
-                m_tokens = m_tokens[1:]
+        # if self.
+        # coin = np.random.choice([False, False, True])
+        # # print(len(m_tokens))
+        # if coin:
+        #     # drop one token at the head or tail
+        #     coin2 = np.random.choice([True, False])
+        #     if coin2:
+        #         m_tokens = m_tokens[:-1]
+        #     else:
+        #         m_tokens = m_tokens[1:]
         m_tokens_len = m_tokens.shape[0]
-
+        result_tokens = np.concatenate([self.sem_start_idx * np.ones((1), dtype=int), sem_tokens,self.sem_end_idx * np.ones((1), dtype=int), m_tokens], axis=0)
         if m_tokens_len+1 < self.max_motion_length:
             m_tokens = np.concatenate([m_tokens, np.ones((1), dtype=int) * self.mot_end_idx, np.ones((self.max_motion_length-1-m_tokens_len), dtype=int) * self.mot_pad_idx], axis=0)
         else:
