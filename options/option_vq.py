@@ -60,5 +60,8 @@ def get_args_parser():
     parser.add_argument('--lgvq', default=0, type=int, help='if use lgvq')
     parser.add_argument('--loss-contrastive', default=0.1, type=float, help='loss contrastive')
     parser.add_argument('--loss-mlm', default=0.1, type=float, help='loss mlm')
+    parser.add_argument('--freeze-encdec', default=0, type=int, help='freeze encdec')
+    parser.add_argument('--num_quantizers', default=2, type=int, help='number of sem quantizers')
+    # parser.add_argument('--sem_nb_code', default=256, type=int, help='number of sem quantizers')
     
     return parser.parse_args()

@@ -61,11 +61,20 @@ class VQMotionDataset(data.Dataset):
                 if (len(motion)) < min_motion_len or (len(motion) >= 200):
                     continue
 
-                data_dict[name] = {'motion': motion,
-                                   'length': len(motion),
-                                   'name': name}
                 new_name_list.append(name)
                 length_list.append(len(motion))
+                text_data = []
+                text_path = pjoin(self.text_dir, name + '.txt')
+                with cs.open(text_path, 'r') as f:
+                    for line in f.readlines():
+                        line_split = line.strip().split('#')
+                        if len(line_split) > 0:
+                            caption = line_split[0]
+                            text_data.append(caption)
+                data_dict[name] = {'motion': motion,
+                                   'length': len(motion),
+                                   'name': name,
+                                   'text': text_data}
             except:
                 # Some motion may not exist in KIT dataset
                 pass
@@ -87,16 +96,22 @@ class VQMotionDataset(data.Dataset):
         name = self.name_list[item]
         data = self.data_dict[name]
         motion, m_length = data['motion'], data['length']
+        text = data['text']
+        if self.unit_length == 1 and m_length > self.max_motion_length:
+            motion = motion[:self.max_motion_length]
+            m_length = self.max_motion_length
+        else:
+            m_length = (m_length // self.unit_length) * self.unit_length
+            # if m_length > self.max_motion_length:
 
-        m_length = (m_length // self.unit_length) * self.unit_length
-
-        idx = random.randint(0, len(motion) - m_length)
-        motion = motion[idx:idx+m_length]
+            idx = random.randint(0, len(motion) - m_length)
+            motion = motion[idx:idx+m_length]
+        
 
         "Z Normalization"
         motion = (motion - self.mean) / self.std
 
-        return motion, name
+        return motion, name, text
 
 def DATALoader(dataset_name,
                 batch_size = 1,

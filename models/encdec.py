@@ -7,6 +7,8 @@ import numpy as np
 from einops import rearrange
 from transformers import BertTokenizer, BertModel
 
+from models.vq.residual_vq import ResidualVQ
+
 class Encoder(nn.Module):
     def __init__(self,
                  input_emb_width = 3,
@@ -179,7 +181,7 @@ class Dualsem_encoderv3(nn.Module):
                  causal = True):  
         super().__init__()
         self.vocab_size = vocab_size
-        
+        self.args = args
         # 添加时间降采样层
         self.ifdown_sample = down_sample
         if down_sample:
@@ -257,7 +259,19 @@ class Dualsem_encoderv3(nn.Module):
             nn.Dropout(dropout),
             nn.GELU()
         )
-        self.sem_quantizer = QuantizeEMAReset(args.nb_code, d_model, args)
+        if args.num_quantizers > 1:
+            rvqvae_config = {
+                'num_quantizers': args.num_quantizers,
+                'shared_codebook': False,
+                'quantize_dropout_prob': 0.2,
+                'quantize_dropout_cutoff_index': 0,
+                'nb_code': args.nb_code,
+                'code_dim': d_model, 
+                'args': args,
+            }
+            self.sem_quantizer = ResidualVQ(**rvqvae_config)
+        else:
+            self.sem_quantizer = QuantizeEMAReset(args.nb_code, d_model, args)
     
     def encode(self, motion, motion_mask=None):
         B, T = motion.shape[0], motion.shape[1]
@@ -302,7 +316,8 @@ class Dualsem_encoderv3(nn.Module):
             for i, layer in enumerate(self.time_transformer.layers):
                 time_feat = self.time_downsamplers[i](time_feat)
                 if self.ifdown_sample:
-                    motion_mask = motion_mask[:, ::2]  # 更新mask
+                    # motion_mask = motion_mask[:, ::2]  # 更新mask
+                    motion_mask = motion_mask[:, ::2].clone()  # 使用 clone() 创建副本
                 time_feat = layer(time_feat, src_key_padding_mask=~motion_mask)
         else:
             # 在每一层Transformer后应用时间降采样
@@ -312,7 +327,10 @@ class Dualsem_encoderv3(nn.Module):
             
         # 特征重组
         feature = time_feat
-        cls_token, loss_commit, perplexity = self.sem_quantizer(feature.permute(0,2,1))
+        if self.args.num_quantizers > 1:
+            cls_token, all_index, loss_commit, perplexity = self.sem_quantizer(feature.permute(0,2,1), sample_codebook_temp=0.5)
+        else:
+            cls_token, loss_commit, perplexity = self.sem_quantizer(feature.permute(0,2,1))
         cls_token = cls_token.permute(0,2,1)
         global_feat = cls_token.mean(dim=1)
         

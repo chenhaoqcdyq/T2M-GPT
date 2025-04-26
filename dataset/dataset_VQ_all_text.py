@@ -62,8 +62,6 @@ class VQMotionDataset(data.Dataset):
                 # self.data.append(motion)
                 text_data = []
                 text_path = pjoin(self.text_dir, name + '.txt')
-                # text_tokens_path = pjoin(self.text_token_dir, name + '.pth')
-                # if os.path.exists(text_path):
                 with cs.open(text_path, 'r') as f:
                     for line in f.readlines():
                         line_split = line.strip().split('#')

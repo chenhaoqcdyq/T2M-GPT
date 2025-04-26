@@ -16,7 +16,7 @@ def collate_fn(batch):
 
 '''For use of training text-2-motion generative model'''
 class Text2MotionDataset(data.Dataset):
-    def __init__(self, dataset_name, feat_bias = 5, unit_length = 4, codebook_size = 1024, tokenizer_name=None):
+    def __init__(self, dataset_name, feat_bias = 5, unit_length = 4, codebook_size = 1024, tokenizer_name=None, sem_codebook_size=512):
         
         self.max_length = 64
         self.pointer = 0
@@ -24,8 +24,12 @@ class Text2MotionDataset(data.Dataset):
 
         self.unit_length = unit_length
         # self.mot_start_idx = codebook_size
-        self.mot_end_idx = codebook_size
-        self.mot_pad_idx = codebook_size + 1
+        self.mot_end_idx = codebook_size + self.sem_end_idx
+        self.mot_pad_idx = codebook_size + 1 + self.sem_end_idx
+        
+        self.sem_start_idx = 0
+        self.sem_end_idx = sem_codebook_size + 2
+        
         if dataset_name == 't2m':
             self.data_root = './dataset/HumanML3D'
             self.motion_dir = pjoin(self.data_root, 'new_joint_vecs')
@@ -33,7 +37,7 @@ class Text2MotionDataset(data.Dataset):
             self.joints_num = 22
             radius = 4
             fps = 20
-            self.max_motion_length = 196 // unit_length + 2
+            self.max_motion_length = 26 if unit_length == 8 else 51
             dim_pose = 263
             kinematic_chain = paramUtil.t2m_kinematic_chain
         elif dataset_name == 'kit':
@@ -44,7 +48,7 @@ class Text2MotionDataset(data.Dataset):
             radius = 240 * 8
             fps = 12.5
             dim_pose = 251
-            self.max_motion_length = 196 // unit_length + 2
+            self.max_motion_length = 26 if unit_length == 8 else 51
             kinematic_chain = paramUtil.kit_kinematic_chain
 
         split_file = pjoin(self.data_root, 'train.txt')
@@ -60,7 +64,7 @@ class Text2MotionDataset(data.Dataset):
         for name in tqdm(id_list):
             try:
                 m_token_list = np.load(pjoin(self.data_root, tokenizer_name, '%s.npy'%name))
-
+                sem_token_list = np.load(pjoin(self.data_root, tokenizer_name, '%s_sem.npy'%name))
                 # Read text
                 with cs.open(pjoin(self.text_dir, name + '.txt')) as f:
                     text_data = []
@@ -98,6 +102,7 @@ class Text2MotionDataset(data.Dataset):
 
                 if flag:
                     data_dict[name] = {'m_token_list': m_token_list,
+                                       'sem_token_list': sem_token_list,
                                        'text':text_data}
                     new_name_list.append(name)
             except:
@@ -110,9 +115,9 @@ class Text2MotionDataset(data.Dataset):
 
     def __getitem__(self, item):
         data = self.data_dict[self.name_list[item]]
-        m_token_list, text_list = data['m_token_list'], data['text']
+        m_token_list, text_list, sem_token_list = data['m_token_list'], data['text'], data['sem_token_list']
         m_tokens = random.choice(m_token_list)
-
+        sem_tokens = random.choice(sem_token_list)
         text_data = random.choice(text_list)
         caption= text_data['caption']
 

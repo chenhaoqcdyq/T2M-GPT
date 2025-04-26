@@ -1,4 +1,5 @@
-import os 
+import os
+import re 
 import torch
 import numpy as np
 
@@ -7,12 +8,13 @@ from os.path import join as pjoin
 from torch.distributions import Categorical
 import json
 import clip
+from tqdm import tqdm
 
 import options.option_transformer as option_trans
 import models.vqvae as vqvae
 import utils.utils_model as utils_model
 import utils.eval_trans as eval_trans
-from dataset import dataset_TM_train
+
 from dataset import dataset_TM_eval
 from dataset import dataset_tokenize
 import models.t2m_trans as trans
@@ -24,9 +26,18 @@ warnings.filterwarnings('ignore')
 ##### ---- Exp dirs ---- #####
 args = option_trans.get_args_parser()
 torch.manual_seed(args.seed)
+vq_name = "VQVAE-T2MGPT-SEM-train"
+# args.out_dir = os.path.join(args.out_dir, f'{args.exp_name}')
+desc = args.dataname
+outdir = args.out_dir
+if os.path.isdir(outdir):
+    prev_run_dirs = [x for x in os.listdir(outdir) if os.path.isdir(os.path.join(outdir, x))]
+prev_run_ids = [re.match(r'^\d+', x) for x in prev_run_dirs]
+prev_run_ids = [int(x.group()) for x in prev_run_ids if x is not None]
+cur_run_id = max(prev_run_ids, default=-1) + 1
+args.out_dir = os.path.join(outdir, f'{cur_run_id:05d}-{args.dataname}-{args.exp_name}', f'VQVAE-{args.exp_name}-{desc}')
 
-args.out_dir = os.path.join(args.out_dir, f'{args.exp_name}')
-args.vq_dir= os.path.join("./dataset/KIT-ML" if args.dataname == 'kit' else "./dataset/HumanML3D", f'{args.vq_name}')
+args.vq_dir= os.path.join("./dataset/KIT-ML" if args.dataname == 'kit' else "./dataset/HumanML3D", f'{vq_name}')
 os.makedirs(args.out_dir, exist_ok = True)
 os.makedirs(args.vq_dir, exist_ok = True)
 
@@ -36,7 +47,7 @@ writer = SummaryWriter(args.out_dir)
 logger.info(json.dumps(vars(args), indent=4, sort_keys=True))
 
 ##### ---- Dataloader ---- #####
-train_loader_token = dataset_tokenize.DATALoader(args.dataname, 1, unit_length=2**args.down_t)
+train_loader_token = dataset_tokenize.DATALoader(args.dataname, 1, unit_length=1)
 
 from utils.word_vectorizer import WordVectorizer
 w_vectorizer = WordVectorizer('./glove', 'our_vab')
@@ -104,8 +115,9 @@ right_num = 0
 nb_sample_train = 0
 
 # ##### ---- get code ---- #####
-for batch in train_loader_token:
-    pose, name = batch
+
+for batch in tqdm(train_loader_token):
+    pose, name, text = batch
     bs, seq = pose.shape[0], pose.shape[1]
 
     pose = pose.cuda().float() # bs, nb_joints, joints_dim, seq_len (1,124,263)
@@ -118,17 +130,21 @@ for batch in train_loader_token:
         sem_idx = None
     motion_idx = motion_idx.cpu().numpy() # (1, x)
     np.save(pjoin(args.vq_dir, name[0] +'.npy'), motion_idx)
+    # np.savez(pjoin(args.vq_dir, name[0] +'.npz'), motion=motion_idx, text=text)
     if sem_idx is not None:
         sem_idx = sem_idx.cpu().numpy() # (1, x)
         np.save(pjoin(args.vq_dir, name[0] +'_sem.npy'), sem_idx)
 
+if args.lgvq:
+    from dataset import dataset_TM_train_lgvq as dataset_TM_train
+else:
+    from dataset import dataset_TM_train
 
-train_loader = dataset_TM_train.DATALoader(args.dataname, args.batch_size, args.nb_code, args.vq_name, unit_length=2**args.down_t)
+train_loader = dataset_TM_train.DATALoader(args.dataname, args.batch_size, args.nb_code, vq_name, unit_length=1)
 train_loader_iter = dataset_TM_train.cycle(train_loader)
 
-
 ##### ---- Training ---- #####
-# best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, clip_model=clip_model, eval_wrapper=eval_wrapper)
+best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, clip_model=clip_model, eval_wrapper=eval_wrapper)
 while nb_iter <= args.total_iter:
     
     batch = next(train_loader_iter)

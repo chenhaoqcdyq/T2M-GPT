@@ -18,6 +18,19 @@ from models.evaluator_wrapper import EvaluatorModelWrapper
 import warnings
 warnings.filterwarnings('ignore')
 from utils.word_vectorizer import WordVectorizer
+torch.autograd.set_detect_anomaly(True)
+def freeze_encdec(net):
+    for name, param in net.named_parameters():
+        if ('lgvq_encoder' in name) and "bert_model" not in name:
+            param.requires_grad = True
+        else:
+            param.requires_grad = False
+    for name, module in net.named_modules():
+        if ('lgvq_encoder' in name) and "bert_model" not in name:
+            module.train()
+        else:
+            module.eval()
+    return net
 
 def update_lr_warm_up(optimizer, nb_iter, warm_up_iter, lr):
 
@@ -112,6 +125,9 @@ if args.resume_pth :
 net.train()
 net.cuda()
 
+if args.freeze_encdec != 0 and args.lgvq != 0:
+    net = freeze_encdec(net)
+
 ##### ---- Optimizer & Scheduler ---- #####
 optimizer = optim.AdamW(net.parameters(), lr=args.lr, betas=(0.9, 0.99), weight_decay=args.weight_decay)
 scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=args.lr_scheduler, gamma=args.gamma)
@@ -170,7 +186,8 @@ for nb_iter in range(1, args.warm_up_iter):
 ##### ---- Training ---- #####
 avg_recons, avg_perplexity, avg_commit, avg_contrastive, avg_mlm = 0., 0., 0., 0., 0.
 best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger, best_mpjpe = eval_trans.evaluation_vqvae(args.run_dir, val_loader, net, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, eval_wrapper=eval_wrapper, draw=False, best_mpjpe=100)
-
+if args.freeze_encdec != 0 and args.lgvq != 0:
+    net = freeze_encdec(net)
 for nb_iter in range(1, args.total_iter + 1):
     
     gt_motion = next(train_loader_iter)
@@ -221,4 +238,6 @@ for nb_iter in range(1, args.total_iter + 1):
 
     if nb_iter % args.eval_iter==0 :
         best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger, best_mpjpe = eval_trans.evaluation_vqvae(args.run_dir, val_loader, net, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, eval_wrapper=eval_wrapper, best_mpjpe=best_mpjpe)
+        if args.freeze_encdec != 0 and args.lgvq != 0:
+            net = freeze_encdec(net)
         

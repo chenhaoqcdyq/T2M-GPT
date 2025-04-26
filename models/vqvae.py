@@ -45,15 +45,10 @@ class VQVAE_251(nn.Module):
 
 
     def preprocess(self, x):
-        # (bs, T, Jx3) -> (bs, Jx3, T)
-        x = x.permute(0,2,1).float()
-        return x
-
+        return x.permute(0,2,1).float()
 
     def postprocess(self, x):
-        # (bs, Jx3, T) ->  (bs, T, Jx3)
-        x = x.permute(0,2,1)
-        return x
+        return x.permute(0,2,1)
 
 
     def encode(self, x):
