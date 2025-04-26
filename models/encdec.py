@@ -354,8 +354,8 @@ class Dualsem_encoderv3(nn.Module):
             text_query = self.text_proj(text_feature)
             motion_feature_global = self.motion_text_proj(global_feat)
             motion_query = self.motion_all_proj(cls_token)
-            if self.ifdown_sample:
-                motion_mask = motion_mask[:, ::4]
+            # if self.ifdown_sample:
+            #     motion_mask = motion_mask[:, ::4]
             # 跨模态注意力
             for layer in self.cross_attn_layers:
                 text_query = layer(

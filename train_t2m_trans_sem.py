@@ -26,7 +26,7 @@ warnings.filterwarnings('ignore')
 ##### ---- Exp dirs ---- #####
 args = option_trans.get_args_parser()
 torch.manual_seed(args.seed)
-vq_name = "VQVAE-T2MGPT-SEM-train"
+vq_name = "VQVAE-T2MGPT-SEM-train-0427"
 # args.out_dir = os.path.join(args.out_dir, f'{args.exp_name}')
 desc = args.dataname
 outdir = args.out_dir
@@ -118,8 +118,7 @@ nb_sample_train = 0
 
 for batch in tqdm(train_loader_token):
     pose, name, text = batch
-    if os.path.exists(pjoin(args.vq_dir, name[0] +'.npy')):
-        continue
+    
     bs, seq = pose.shape[0], pose.shape[1]
 
     pose = pose.cuda().float() # bs, nb_joints, joints_dim, seq_len (1,124,263)
@@ -134,9 +133,9 @@ for batch in tqdm(train_loader_token):
     
     np.save(pjoin(args.vq_dir, name[0] +'.npy'), motion_idx)
     # np.savez(pjoin(args.vq_dir, name[0] +'.npz'), motion=motion_idx, text=text)
-    # if sem_idx is not None:
-    #     sem_idx = sem_idx.cpu().numpy() # (1, x)
-    #     np.save(pjoin(args.vq_dir, name[0] +'_sem.npy'), sem_idx)
+    if sem_idx is not None:
+        sem_idx = sem_idx.cpu().numpy() # (1, x)
+        np.save(pjoin(args.vq_dir, name[0] +'_sem.npy'), sem_idx)
 
 if args.lgvq:
     from dataset import dataset_TM_train_lgvq as dataset_TM_train

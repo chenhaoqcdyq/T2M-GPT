@@ -16,8 +16,8 @@ def collate_fn(batch):
 
 '''For use of training text-2-motion generative model'''
 class Text2MotionDataset(data.Dataset):
-    def __init__(self, dataset_name, feat_bias = 5, unit_length = 4, codebook_size = 1024, tokenizer_name=None, sem_codebook_size=512):
-        
+    def __init__(self, dataset_name, feat_bias = 5, unit_length = 4, codebook_size = 1024, tokenizer_name=None, sem_codebook_size=512, down_sample = True):
+        self.down_sample = down_sample
         self.max_length = 64
         self.pointer = 0
         self.dataset_name = dataset_name
@@ -37,7 +37,7 @@ class Text2MotionDataset(data.Dataset):
             self.joints_num = 22
             radius = 4
             fps = 20
-            self.max_motion_length = 26 if unit_length == 8 else 51
+            
             dim_pose = 263
             kinematic_chain = paramUtil.t2m_kinematic_chain
         elif dataset_name == 'kit':
@@ -48,11 +48,14 @@ class Text2MotionDataset(data.Dataset):
             radius = 240 * 8
             fps = 12.5
             dim_pose = 251
-            self.max_motion_length = 26 if unit_length == 8 else 51
+            
             kinematic_chain = paramUtil.kit_kinematic_chain
 
         split_file = pjoin(self.data_root, 'train.txt')
-
+        self.max_motion_length = 196 // unit_length + 2
+        if self.down_sample:
+            self.max_motion_length = self.max_motion_length + (self.max_motion_length - 2) // self.down_sample
+        
 
         id_list = []
         with cs.open(split_file, 'r') as f:
@@ -133,7 +136,7 @@ class Text2MotionDataset(data.Dataset):
         #     else:
         #         m_tokens = m_tokens[1:]
         m_tokens_len = m_tokens.shape[0]
-        result_tokens = np.concatenate([self.sem_start_idx * np.ones((1), dtype=int), sem_tokens,self.sem_end_idx * np.ones((1), dtype=int), m_tokens], axis=0)
+        m_tokens = np.concatenate([self.sem_start_idx * np.ones((1), dtype=int), sem_tokens,self.sem_end_idx * np.ones((1), dtype=int), m_tokens], axis=0)
         if m_tokens_len+1 < self.max_motion_length:
             m_tokens = np.concatenate([m_tokens, np.ones((1), dtype=int) * self.mot_end_idx, np.ones((self.max_motion_length-1-m_tokens_len), dtype=int) * self.mot_pad_idx], axis=0)
         else:
