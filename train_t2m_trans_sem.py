@@ -26,7 +26,7 @@ warnings.filterwarnings('ignore')
 ##### ---- Exp dirs ---- #####
 args = option_trans.get_args_parser()
 torch.manual_seed(args.seed)
-vq_name = "VQVAE-T2MGPT-SEM-train-0427"
+vq_name = "VQVAE-T2MGPT-SEM-train-00043"
 # args.out_dir = os.path.join(args.out_dir, f'{args.exp_name}')
 desc = args.dataname
 outdir = args.out_dir
@@ -121,12 +121,12 @@ nb_sample_train = 0
 generate_idx = False
 for batch in tqdm(train_loader_token):
     pose, name, text = batch
-    # if os.path.exists(pjoin(args.vq_dir, name[0] +'.npy')):
-    #     if args.lgvq:
-    #         if os.path.exists(pjoin(args.vq_dir, name[0] +'_sem.npy')):
-    #             continue
-    #     else:
-    #         continue
+    if os.path.exists(pjoin(args.vq_dir, name[0] +'.npy')):
+        if args.lgvq:
+            if os.path.exists(pjoin(args.vq_dir, name[0] +'_sem.npy')):
+                continue
+        else:
+            continue
     bs, seq = pose.shape[0], pose.shape[1]
 
     pose = pose.cuda().float() # bs, nb_joints, joints_dim, seq_len (1,124,263)
@@ -151,7 +151,6 @@ for batch in tqdm(train_loader_token):
         np.savez(pjoin("/workspace/motion_diffusion/T2M-GPT/dataset/HumanML3D/T2M_with_end_val", name[0] +'.npz'), motion=m_tokens_result, text=text)
     else:
         np.save(pjoin(args.vq_dir, name[0] +'.npy'), motion_idx)
-        # np.savez(pjoin(args.vq_dir, name[0] +'.npz'), motion=motion_idx, text=text)
         if sem_idx is not None:
             sem_idx = sem_idx.cpu().numpy() # (1, x)
             np.save(pjoin(args.vq_dir, name[0] +'_sem.npy'), sem_idx)
@@ -234,7 +233,7 @@ while nb_iter <= args.total_iter:
         nb_sample_train = 0
 
     if nb_iter % args.eval_iter ==  0:
-        best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model=clip_model, eval_wrapper=eval_wrapper)
+        best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model=clip_model, eval_wrapper=eval_wrapper, semantic_flag=args.lgvq)
 
     if nb_iter == args.total_iter: 
         msg_final = f"Train. Iter {best_iter} : FID. {best_fid:.5f}, Diversity. {best_div:.4f}, TOP1. {best_top1:.4f}, TOP2. {best_top2:.4f}, TOP3. {best_top3:.4f}"

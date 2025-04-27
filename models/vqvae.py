@@ -41,7 +41,7 @@ class VQVAE_251(nn.Module):
             self.quantizer = QuantizeReset(nb_code, code_dim, args)
         
         if self.lgvq == 1:
-            self.lgvq_encoder = Dualsem_encoderv3(args, d_model=output_emb_width, num_layers=2, down_sample=args.down_sample if 'down_sample' in args else False)
+            self.lgvq_encoder = Dualsem_encoderv3(args, d_model=output_emb_width, num_layers=2, down_sample=args.down_sample if 'down_sample' in args else 0)
 
 
     def preprocess(self, x):

@@ -23,11 +23,11 @@ class Text2MotionDataset(data.Dataset):
         self.dataset_name = dataset_name
 
         self.unit_length = unit_length
-        self.sem_start_idx = 0
-        self.sem_end_idx = sem_codebook_size + 2
-        # self.mot_start_idx = codebook_size
-        self.mot_end_idx = codebook_size + self.sem_end_idx
-        self.mot_pad_idx = codebook_size + 1 + self.sem_end_idx
+        # self.sem_start_idx = 0
+        self.sem_end_idx = sem_codebook_size
+        self.start_motion_idx = self.sem_end_idx + 1
+        self.mot_end_idx = codebook_size + self.start_motion_idx
+        self.mot_pad_idx = self.mot_end_idx + 1
         
         
         
@@ -138,7 +138,7 @@ class Text2MotionDataset(data.Dataset):
         #         m_tokens = m_tokens[:-1]
         #     else:
         #         m_tokens = m_tokens[1:]
-        m_tokens = m_tokens + self.sem_end_idx
+        m_tokens = m_tokens + self.start_motion_idx
         m_tokens_sem = np.concatenate([self.sem_start_idx * np.ones((1), dtype=int), sem_tokens,self.sem_end_idx * np.ones((1), dtype=int), m_tokens], axis=0)
         m_tokens_len = m_tokens_sem.shape[0]
         if m_tokens_len+1 < self.max_motion_length:

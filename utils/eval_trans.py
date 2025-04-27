@@ -7,7 +7,7 @@ from scipy import linalg
 from tqdm import tqdm
 import visualization.plot_3d_global as plot_3d
 from utils.motion_process import recover_from_ric
-
+from typing import Any, List, Tuple, Union
 
 def tensorborad_add_video_xyz(writer, xyz, nb_iter, tag, nb_vis=4, title_batch=None, outname=None):
     xyz = xyz[:1]
@@ -195,7 +195,7 @@ def evaluation_vqvae(out_dir, val_loader, net, logger, writer, nb_iter, best_fid
 
 
 @torch.no_grad()        
-def evaluation_transformer(out_dir, val_loader, net, trans, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model, eval_wrapper, draw = True, save = True, savegif=False) : 
+def evaluation_transformer(out_dir, val_loader, net, trans, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model, eval_wrapper, draw = True, save = True, savegif=False, semantic_flag=False) : 
 
     trans.eval()
     nb_sample = 0
@@ -231,8 +231,11 @@ def evaluation_transformer(out_dir, val_loader, net, trans, logger, writer, nb_i
                     index_motion = trans.sample(feat_clip_text[k:k+1], False)
                 except:
                     index_motion = torch.ones(1,1).cuda().long()
-
-                pred_pose = net.forward_decoder(index_motion)
+                if semantic_flag:
+                    index_motion = index_motion[index_motion >= 513] - 513
+                    pred_pose = net.forward_decoder(index_motion)
+                else:
+                    pred_pose = net.forward_decoder(index_motion)
                 cur_len = pred_pose.shape[1]
 
                 pred_len[k] = min(cur_len, seq)
@@ -609,3 +612,219 @@ def calculate_frechet_feature_distance(feature_list1, feature_list2):
         sigma2=np.cov(feature_list2, rowvar=False),
     )
     return dist
+
+@torch.no_grad()        
+def evaluation_transformer(out_dir, val_loader, net, trans, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model, eval_wrapper, draw = True) : 
+
+    trans.eval()
+    nb_sample = 0
+    
+    draw_org = []
+    draw_pred = []
+    draw_text = []
+    draw_text_pred = []
+
+    motion_annotation_list = []
+    motion_pred_list = []
+    R_precision_real = 0
+    R_precision = 0
+    matching_score_real = 0
+    matching_score_pred = 0
+
+    nb_sample = 0
+    for i in range(1):
+        for batch in tqdm(val_loader):
+            word_embeddings, pos_one_hots, clip_text, sent_len, pose, m_length, token, name = batch
+
+            bs, seq = pose.shape[:2]
+            num_joints = 21 if pose.shape[-1] == 251 else 22
+            
+            text = clip.tokenize(clip_text, truncate=True).cuda()
+
+            feat_clip_text = clip_model.encode_text(text).float()
+            pred_pose_eval = torch.zeros((bs, seq, pose.shape[-1])).cuda()
+            pred_len = torch.ones(bs).long()
+
+            for k in range(bs):
+                try:
+                    index_motion = trans.sample(feat_clip_text[k:k+1], False)
+                except:
+                    index_motion = torch.ones(1,1).cuda().long()
+
+                pred_pose = net.forward_decoder(index_motion)
+                cur_len = pred_pose.shape[1]
+
+                pred_len[k] = min(cur_len, seq)
+                pred_pose_eval[k:k+1, :cur_len] = pred_pose[:, :seq]
+
+                if draw:
+                    pred_denorm = val_loader.dataset.inv_transform(pred_pose.detach().cpu().numpy())
+                    pred_xyz = recover_from_ric(torch.from_numpy(pred_denorm).float().cuda(), num_joints)
+
+                    if i == 0 and k < 4:
+                        draw_pred.append(pred_xyz)
+                        draw_text_pred.append(clip_text[k])
+
+            et_pred, em_pred = eval_wrapper.get_co_embeddings(word_embeddings, pos_one_hots, sent_len, pred_pose_eval, pred_len)
+            
+            if i == 0:
+                pose = pose.cuda().float()
+                
+                et, em = eval_wrapper.get_co_embeddings(word_embeddings, pos_one_hots, sent_len, pose, m_length)
+                motion_annotation_list.append(em)
+                motion_pred_list.append(em_pred)
+
+                if draw:
+                    pose = val_loader.dataset.inv_transform(pose.detach().cpu().numpy())
+                    pose_xyz = recover_from_ric(torch.from_numpy(pose).float().cuda(), num_joints)
+
+
+                    for j in range(min(4, bs)):
+                        draw_org.append(pose_xyz[j][:m_length[j]].unsqueeze(0))
+                        draw_text.append(clip_text[j])
+
+                temp_R, temp_match = calculate_R_precision(et.cpu().numpy(), em.cpu().numpy(), top_k=3, sum_all=True)
+                R_precision_real += temp_R
+                matching_score_real += temp_match
+                temp_R, temp_match = calculate_R_precision(et_pred.cpu().numpy(), em_pred.cpu().numpy(), top_k=3, sum_all=True)
+                R_precision += temp_R
+                matching_score_pred += temp_match
+
+                nb_sample += bs
+
+    motion_annotation_np = torch.cat(motion_annotation_list, dim=0).cpu().numpy()
+    motion_pred_np = torch.cat(motion_pred_list, dim=0).cpu().numpy()
+    gt_mu, gt_cov  = calculate_activation_statistics(motion_annotation_np)
+    mu, cov= calculate_activation_statistics(motion_pred_np)
+
+    diversity_real = calculate_diversity(motion_annotation_np, 300 if nb_sample > 300 else 100)
+    diversity = calculate_diversity(motion_pred_np, 300 if nb_sample > 300 else 100)
+
+    R_precision_real = R_precision_real / nb_sample
+    R_precision = R_precision / nb_sample
+
+    matching_score_real = matching_score_real / nb_sample
+    matching_score_pred = matching_score_pred / nb_sample
+
+
+    fid = calculate_frechet_distance(gt_mu, gt_cov, mu, cov)
+
+    msg = f"--> \t Eva. Iter {nb_iter} :, FID. {fid:.4f}, Diversity Real. {diversity_real:.4f}, Diversity. {diversity:.4f}, R_precision_real. {R_precision_real}, R_precision. {R_precision}, matching_score_real. {matching_score_real}, matching_score_pred. {matching_score_pred}"
+    logger.info(msg)
+    
+
+
+    trans.train()
+    return best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger
+
+
+
+class EasyDict(dict):
+    """Convenience class that behaves like a dict but allows access with the attribute syntax. From stylegan2-ADA"""
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self[name] = value
+
+    def __delattr__(self, name: str) -> None:
+        del self[name]
+
+if __name__ == "__main__":
+    import os
+    import re 
+    import torch
+    import numpy as np
+
+    from torch.utils.tensorboard import SummaryWriter
+    from os.path import join as pjoin
+    # from torch.distributions import Categorical
+    import json
+    import clip
+    from tqdm import tqdm
+
+    import options.option_transformer as option_trans
+    import models.vqvae as vqvae
+    import utils.utils_model as utils_model
+    import utils.eval_trans as eval_trans
+
+    from dataset import dataset_TM_eval
+    from dataset import dataset_tokenize
+    import models.t2m_trans as trans
+    from options.get_eval_option import get_opt
+    from models.evaluator_wrapper import EvaluatorModelWrapper
+    import warnings
+    warnings.filterwarnings('ignore')
+
+    ##### ---- Exp dirs ---- #####
+    args = option_trans.get_args_parser()
+    # vqvae_train_dir = "output/VQVAE_all_motion_best"
+    # training_options_path = os.path.join(vqvae_train_dir, 'train_config.json')
+    # with open(training_options_path, 'r') as f:
+    #     train_args_dict = json.load(f)  # dict
+    # train_args = EasyDict(train_args_dict)  # convert dict to easydict for convenience
+    # args = train_args
+    torch.manual_seed(args.seed)
+    ##### ---- Dataloader ---- #####
+    train_loader_token = dataset_tokenize.DATALoader(args.dataname, 1, unit_length=1)
+
+    from utils.word_vectorizer import WordVectorizer
+    w_vectorizer = WordVectorizer('./glove', 'our_vab')
+    val_loader = dataset_TM_eval.DATALoader(args.dataname, False, 32, w_vectorizer)
+
+    dataset_opt_path = 'checkpoints/kit/Comp_v6_KLD005/opt.txt' if args.dataname == 'kit' else 'checkpoints/t2m/Comp_v6_KLD005/opt.txt'
+
+    wrapper_opt = get_opt(dataset_opt_path, torch.device('cuda'))
+    eval_wrapper = EvaluatorModelWrapper(wrapper_opt)
+
+    ##### ---- Network ---- #####
+    clip_model, clip_preprocess = clip.load("ViT-B/32", device=torch.device('cuda'), jit=False)  # Must set jit=False for training
+    clip.model.convert_weights(clip_model)  # Actually this line is unnecessary since clip by default already on float16
+    clip_model.eval()
+    for p in clip_model.parameters():
+        p.requires_grad = False
+
+    net = vqvae.HumanVQVAE(args, ## use args to define different parameters in different quantizers
+                        args.nb_code,
+                        args.code_dim,
+                        args.output_emb_width,
+                        args.down_t,
+                        args.stride_t,
+                        args.width,
+                        args.depth,
+                        args.dilation_growth_rate,
+                        args.vq_act,
+                        #    args.vq_norm,
+                        enc='transformer',
+                        lgvq=args.lgvq)
+
+    if args.lgvq:
+        num_vq_trans = args.nb_code * 2 + 1
+    else:
+        num_vq_trans = args.nb_code
+    trans_encoder = trans.Text2Motion_Transformer(num_vq=num_vq_trans, 
+                                    embed_dim=args.embed_dim_gpt, 
+                                    clip_dim=args.clip_dim, 
+                                    block_size=args.block_size, 
+                                    num_layers=args.num_layers, 
+                                    n_head=args.n_head_gpt, 
+                                    drop_out_rate=args.drop_out_rate, 
+                                    fc_rate=args.ff_rate)
+
+
+    print ('loading checkpoint from {}'.format(args.resume_pth))
+    ckpt = torch.load(args.resume_pth, map_location='cpu')
+    net.load_state_dict(ckpt['net'], strict=True)
+    net.eval()
+    net.cuda()
+
+    if args.resume_trans is not None:
+        print ('loading transformer checkpoint from {}'.format(args.resume_trans))
+        ckpt = torch.load(args.resume_trans, map_location='cpu')
+        trans_encoder.load_state_dict(ckpt['trans'], strict=True)
+    trans_encoder.train()
+    trans_encoder.cuda()

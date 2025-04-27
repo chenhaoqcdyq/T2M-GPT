@@ -177,21 +177,24 @@ class Dualsem_encoderv3(nn.Module):
                  bert_hidden_dim=768,
                  vocab_size=30522,
                  dropout=0.2,   # 增加dropout率
-                 down_sample = False,
+                 down_sample = 0,
                  causal = True):  
         super().__init__()
         self.vocab_size = vocab_size
         self.args = args
         # 添加时间降采样层
         self.ifdown_sample = down_sample
-        if down_sample:
+        if down_sample==1:
             self.time_downsamplers = nn.ModuleList([
                 TemporalDownsamplerHalf(d_model, causal=causal) for _ in range(num_layers)
             ])
-        else:
+        elif down_sample==0:
             self.time_downsamplers = nn.ModuleList([
                 nn.Identity() for _ in range(num_layers)
             ])
+        else:
+            self.time_downsamplers = CausalDownsample(d_model, down_sample)
+            
         
         # if causal:
         self.time_transformer = CausalTransformerEncoder(
@@ -311,19 +314,27 @@ class Dualsem_encoderv3(nn.Module):
         time_feat = motion
         if motion_mask is not None:
             motion_mask = motion_mask.to(time_feat.device).bool()
-            
-            # 在每一层Transformer后应用时间降采样
-            for i, layer in enumerate(self.time_transformer.layers):
-                time_feat = self.time_downsamplers[i](time_feat)
-                if self.ifdown_sample:
-                    # motion_mask = motion_mask[:, ::2]  # 更新mask
-                    motion_mask = motion_mask[:, ::2].clone()  # 使用 clone() 创建副本
-                time_feat = layer(time_feat, src_key_padding_mask=~motion_mask)
+            if self.ifdown_sample == 2:
+                time_feat = self.time_downsamplers(time_feat, padding_mask=~motion_mask)
+                motion_mask = motion_mask[:, ::4].clone()
+                time_feat = self.time_transformer(time_feat, src_key_padding_mask=~motion_mask)
+            else:
+                # 在每一层Transformer后应用时间降采样
+                for i, layer in enumerate(self.time_transformer.layers):
+                    time_feat = self.time_downsamplers[i](time_feat)
+                    if self.ifdown_sample:
+                        # motion_mask = motion_mask[:, ::2]  # 更新mask
+                        motion_mask = motion_mask[:, ::2].clone()  # 使用 clone() 创建副本
+                    time_feat = layer(time_feat, src_key_padding_mask=~motion_mask)
         else:
-            # 在每一层Transformer后应用时间降采样
-            for i, layer in enumerate(self.time_transformer.layers):
-                time_feat = self.time_downsamplers[i](time_feat)
-                time_feat = layer(time_feat)
+            if self.ifdown_sample == 2:
+                time_feat = self.time_downsamplers(time_feat)
+                time_feat = self.time_transformer(time_feat)
+            else:
+                # 在每一层Transformer后应用时间降采样
+                for i, layer in enumerate(self.time_transformer.layers):
+                    time_feat = self.time_downsamplers[i](time_feat)
+                    time_feat = layer(time_feat)
             
         # 特征重组
         feature = time_feat
@@ -389,6 +400,65 @@ class Dualsem_encoderv3(nn.Module):
             mlm_loss = torch.tensor(0.0).to(motion.device)
         
         return cls_token, [contrastive_loss, mlm_loss], [loss_commit, perplexity]
+
+def create_causal_mask(seq_len, device):
+    """创建严格因果掩码（禁止关注未来帧）"""
+    mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
+    return mask.to(device)  # [seq_len, seq_len]
+
+def create_cross_causal_mask(tgt_len, src_len, device):
+    """
+    生成跨注意力因果掩码
+    :param tgt_len: 目标序列长度（降采样后）
+    :param src_len: 源序列长度（原始输入）
+    :return: 掩码矩阵 [tgt_len, src_len]
+    """
+    # 计算降采样步长（假设能整除）
+    stride = src_len // tgt_len  
+    
+    # 向量化生成掩码
+    rows = torch.arange(tgt_len, device=device)[:, None]
+    cols = torch.arange(src_len, device=device)[None, :]
+    
+    # 每个目标位置i最多能看到源的前(i+1)*stride个位置
+    mask = cols >= (rows + 1) * stride  # [tgt_len, src_len]
+    return mask
+
+class CausalDownsample(nn.Module):
+    def __init__(self, dim, down_ratio=2):
+        super().__init__()
+        self.down_ratio = down_ratio
+        self.query = nn.Parameter(torch.randn(196 // (2**down_ratio), dim))
+        
+        self.causal_conv = nn.ModuleList([
+            TemporalDownsamplerHalf(dim, causal=True) for _ in range(down_ratio)
+        ])
+        # 因果多头注意力
+        self.attn = nn.MultiheadAttention(
+            embed_dim=dim,
+            num_heads=8,
+            dropout=0.1,
+            batch_first=True
+        )
+
+    def forward(self, x, padding_mask=None):
+        # 步骤1：因果卷积初步降采样
+        x_conv = x.clone()
+        for layer in self.causal_conv:
+            x_conv = layer(x_conv)  # [bs, seq//4, dim]
+        
+        # 步骤2：因果交叉注意力精调
+        # seq_len = x.size(1)
+        causal_mask = create_cross_causal_mask(x_conv.size(1), x.size(1), x.device)
+        
+        attn_out, _ = self.attn(
+            query=x_conv, 
+            key=x, 
+            value=x,
+            attn_mask=causal_mask,        # 时序因果约束
+            key_padding_mask=padding_mask # 输入Padding处理
+        )
+        return attn_out
 
 class ContrastiveLossWithSTSV2(nn.Module):
     def __init__(self, temperature=0.07):
@@ -486,12 +556,12 @@ class TemporalDownsamplerHalf(nn.Module):
             self.conv_layers = nn.Sequential(
                 RepeatFirstElementPad1d(padding=2),
                 nn.Conv1d(d_model, d_model, kernel_size=3, stride=2, padding=0),
-                nn.GELU()
+                # nn.GELU()
             )
         else:
             self.conv_layers = nn.Sequential(
                 nn.Conv1d(d_model, d_model, kernel_size=3, stride=2, padding=1),
-                nn.GELU()
+                # nn.GELU()
             )
         
     def forward(self, x):
