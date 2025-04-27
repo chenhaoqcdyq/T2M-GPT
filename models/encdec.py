@@ -78,7 +78,8 @@ class Encoder_Transformer(nn.Module):
                  dim = 251,
                  d_model=512,
                  nhead = 8,
-                 num_layers = 3):
+                 num_layers = 3,
+                 down_sample = False):
         super().__init__()
         self.part_projs = DynamicProjection(dim, d_model=d_model)
         time_encoder_layer = nn.TransformerEncoderLayer(
@@ -87,6 +88,11 @@ class Encoder_Transformer(nn.Module):
             dim_feedforward=4*d_model,
             batch_first=True
         )
+        self.down_sample = down_sample
+        if down_sample:
+            self.down_sample = CausalDownsample(d_model, 2)
+        else:
+            self.down_sample = nn.Identity()
         # self.spatial_transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.time_transformer = CausalTransformerEncoder(time_encoder_layer, num_layers=num_layers)
     
@@ -96,9 +102,13 @@ class Encoder_Transformer(nn.Module):
         motion_feature = self.part_projs(motion_feature).permute(0,2,1)
         if motion_mask is not None:
             motion_mask = motion_mask.to(motion_feature.device).bool()
-            # time_key_padding_mask = motion_mask.repeat_interleave(6, dim=0)
+            if self.down_sample:
+                motion_feature = self.down_sample(motion_feature, padding_mask=~motion_mask)
+                motion_mask = motion_mask[:, ::4].clone()
             time_feat = self.time_transformer(motion_feature, src_key_padding_mask=~motion_mask)  # [T, B*7, d]
         else:
+            if self.down_sample:
+                motion_feature = self.down_sample(motion_feature)
             time_feat = self.time_transformer(motion_feature)
         # 残差连接增强
         return time_feat.permute(0,2,1)

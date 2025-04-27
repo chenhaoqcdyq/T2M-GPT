@@ -146,12 +146,13 @@ for nb_iter in range(1, args.warm_up_iter):
     gt_motion = next(train_loader_iter)
     if len(gt_motion) == 2:
         gt_motion, gt_motion_mask = gt_motion
+        text_mask, name = None, None
     elif len(gt_motion) == 3:
         gt_motion, gt_motion_mask, text_mask = gt_motion
     elif len(gt_motion) == 4:
         gt_motion, gt_motion_mask, text_mask, name = gt_motion
     else:
-        gt_motion_mask = None
+        gt_motion_mask, text_mask, name = None, None, None
     gt_motion = gt_motion.cuda().float() # (bs, 64, dim)
     if gt_motion_mask is not None:
         gt_motion_mask = gt_motion_mask.cuda().long() # (bs, 64)
