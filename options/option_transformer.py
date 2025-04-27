@@ -65,6 +65,7 @@ def get_args_parser():
     parser.add_argument('--pkeep', type=float, default=1.0, help='keep rate for gpt training')
     parser.add_argument('--all_motion', type=int, default=1, help='use all motion')
     parser.add_argument('--lgvq', type=int, default=1, help='use lgvq')
-    parser.add_argument('--num_quantizers', default=2, type=int, help='number of sem quantizers')
+    parser.add_argument('--num_quantizers', default=1, type=int, help='number of sem quantizers')
+    parser.add_argument('--down_sample', default=0, type=int, help='down sample')
     
     return parser.parse_args()

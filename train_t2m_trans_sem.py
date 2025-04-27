@@ -79,8 +79,11 @@ net = vqvae.HumanVQVAE(args, ## use args to define different parameters in diffe
                        enc='transformer',
                        lgvq=args.lgvq)
 
-
-trans_encoder = trans.Text2Motion_Transformer(num_vq=args.nb_code, 
+if args.lgvq:
+    num_vq_trans = args.nb_code * 2 + 2
+else:
+    num_vq_trans = args.nb_code
+trans_encoder = trans.Text2Motion_Transformer(num_vq=num_vq_trans, 
                                 embed_dim=args.embed_dim_gpt, 
                                 clip_dim=args.clip_dim, 
                                 block_size=args.block_size, 
@@ -115,10 +118,15 @@ right_num = 0
 nb_sample_train = 0
 
 # ##### ---- get code ---- #####
-
+generate_idx = False
 for batch in tqdm(train_loader_token):
     pose, name, text = batch
-    
+    # if os.path.exists(pjoin(args.vq_dir, name[0] +'.npy')):
+    #     if args.lgvq:
+    #         if os.path.exists(pjoin(args.vq_dir, name[0] +'_sem.npy')):
+    #             continue
+    #     else:
+    #         continue
     bs, seq = pose.shape[0], pose.shape[1]
 
     pose = pose.cuda().float() # bs, nb_joints, joints_dim, seq_len (1,124,263)
@@ -130,15 +138,26 @@ for batch in tqdm(train_loader_token):
         motion_idx = target
         sem_idx = None
     motion_idx = motion_idx.cpu().numpy() # (1, x)
-    
-    np.save(pjoin(args.vq_dir, name[0] +'.npy'), motion_idx)
-    # np.savez(pjoin(args.vq_dir, name[0] +'.npz'), motion=motion_idx, text=text)
-    if sem_idx is not None:
-        sem_idx = sem_idx.cpu().numpy() # (1, x)
-        np.save(pjoin(args.vq_dir, name[0] +'_sem.npy'), sem_idx)
+    if generate_idx == True:
+        m_tokens_len = motion_idx.shape[1]
+        max_motion_length = 197
+        mot_end_idx = 512
+        mot_pad_idx = 513
+        m_tokens_sem = motion_idx[0]
+        if m_tokens_len+1 < max_motion_length:
+            m_tokens_result = np.concatenate([m_tokens_sem, np.ones((1), dtype=int) * mot_end_idx, np.ones((max_motion_length-1-m_tokens_len), dtype=int) * mot_pad_idx], axis=0)
+        else:
+            m_tokens_result = np.concatenate([m_tokens_sem[:max_motion_length-1], np.ones((1), dtype=int) * mot_end_idx], axis=0)
+        np.savez(pjoin("/workspace/motion_diffusion/T2M-GPT/dataset/HumanML3D/T2M_with_end_val", name[0] +'.npz'), motion=m_tokens_result, text=text)
+    else:
+        np.save(pjoin(args.vq_dir, name[0] +'.npy'), motion_idx)
+        # np.savez(pjoin(args.vq_dir, name[0] +'.npz'), motion=motion_idx, text=text)
+        if sem_idx is not None:
+            sem_idx = sem_idx.cpu().numpy() # (1, x)
+            np.save(pjoin(args.vq_dir, name[0] +'_sem.npy'), sem_idx)
 
 if args.lgvq:
-    from dataset import dataset_TM_train_lgvq as dataset_TM_train
+    from dataset import dataset_TM_train_sem as dataset_TM_train
 else:
     from dataset import dataset_TM_train
 
@@ -146,7 +165,8 @@ train_loader = dataset_TM_train.DATALoader(args.dataname, args.batch_size, args.
 train_loader_iter = dataset_TM_train.cycle(train_loader)
 
 ##### ---- Training ---- #####
-best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, clip_model=clip_model, eval_wrapper=eval_wrapper)
+# best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, clip_model=clip_model, eval_wrapper=eval_wrapper)
+best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching = 1000, 0, 100, 0, 0, 0, 100
 while nb_iter <= args.total_iter:
     
     batch = next(train_loader_iter)

@@ -23,12 +23,13 @@ class Text2MotionDataset(data.Dataset):
         self.dataset_name = dataset_name
 
         self.unit_length = unit_length
+        self.sem_start_idx = 0
+        self.sem_end_idx = sem_codebook_size + 2
         # self.mot_start_idx = codebook_size
         self.mot_end_idx = codebook_size + self.sem_end_idx
         self.mot_pad_idx = codebook_size + 1 + self.sem_end_idx
         
-        self.sem_start_idx = 0
-        self.sem_end_idx = sem_codebook_size + 2
+        
         
         if dataset_name == 't2m':
             self.data_root = './dataset/HumanML3D'
@@ -52,9 +53,9 @@ class Text2MotionDataset(data.Dataset):
             kinematic_chain = paramUtil.kit_kinematic_chain
 
         split_file = pjoin(self.data_root, 'train.txt')
-        self.max_motion_length = 196 // unit_length + 2
+        self.max_motion_length = 196 // unit_length + 4
         if self.down_sample:
-            self.max_motion_length = self.max_motion_length + (self.max_motion_length - 2) // self.down_sample
+            self.max_motion_length = self.max_motion_length + (self.max_motion_length - 4) // 4
         
 
         id_list = []
@@ -92,12 +93,14 @@ class Text2MotionDataset(data.Dataset):
                                 text_data.append(text_dict)
                             else:
                                 m_token_list_new = [tokens[int(f_tag*fps/unit_length) : int(to_tag*fps/unit_length)] for tokens in m_token_list if int(f_tag*fps/unit_length) < int(to_tag*fps/unit_length)]
-
+                                # sem_token_list_new = [tokens[int(f_tag*fps/unit_length) : int(to_tag*fps/unit_length)] for tokens in sem_token_list if int(f_tag*fps/unit_length) < int(to_tag*fps/unit_length)]
+                                sem_token_list_new = sem_token_list
                                 if len(m_token_list_new) == 0:
                                     continue
                                 new_name = '%s_%f_%f'%(name, f_tag, to_tag)
 
                                 data_dict[new_name] = {'m_token_list': m_token_list_new,
+                                                       'sem_token_list': sem_token_list_new,
                                                        'text':[text_dict]}
                                 new_name_list.append(new_name)
                         except:
@@ -135,14 +138,15 @@ class Text2MotionDataset(data.Dataset):
         #         m_tokens = m_tokens[:-1]
         #     else:
         #         m_tokens = m_tokens[1:]
-        m_tokens_len = m_tokens.shape[0]
-        m_tokens = np.concatenate([self.sem_start_idx * np.ones((1), dtype=int), sem_tokens,self.sem_end_idx * np.ones((1), dtype=int), m_tokens], axis=0)
+        m_tokens = m_tokens + self.sem_end_idx
+        m_tokens_sem = np.concatenate([self.sem_start_idx * np.ones((1), dtype=int), sem_tokens,self.sem_end_idx * np.ones((1), dtype=int), m_tokens], axis=0)
+        m_tokens_len = m_tokens_sem.shape[0]
         if m_tokens_len+1 < self.max_motion_length:
-            m_tokens = np.concatenate([m_tokens, np.ones((1), dtype=int) * self.mot_end_idx, np.ones((self.max_motion_length-1-m_tokens_len), dtype=int) * self.mot_pad_idx], axis=0)
+            m_tokens_result = np.concatenate([m_tokens_sem, np.ones((1), dtype=int) * self.mot_end_idx, np.ones((self.max_motion_length-1-m_tokens_len), dtype=int) * self.mot_pad_idx], axis=0)
         else:
-            m_tokens = np.concatenate([m_tokens, np.ones((1), dtype=int) * self.mot_end_idx], axis=0)
+            m_tokens_result = np.concatenate([m_tokens_sem, np.ones((1), dtype=int) * self.mot_end_idx], axis=0)
 
-        return caption, m_tokens.reshape(-1), m_tokens_len
+        return caption, m_tokens_result.reshape(-1), m_tokens_len
 
 
 
