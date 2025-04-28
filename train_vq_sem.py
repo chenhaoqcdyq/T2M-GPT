@@ -63,7 +63,10 @@ os.makedirs(args.run_dir)
 logger = utils_model.get_logger(args.run_dir)
 writer = SummaryWriter(args.run_dir)
 logger.info(json.dumps(vars(args), indent=4, sort_keys=True))
-
+args.args_save_dir = os.path.join(args.run_dir, 'train_config.json')
+args_dict = vars(args)
+with open(args.args_save_dir, 'wt') as f:
+    json.dump(args_dict, f, indent=4)
 
 
 w_vectorizer = WordVectorizer('./glove', 'our_vab')
@@ -112,7 +115,7 @@ net = vqvae.HumanVQVAE(args, ## use args to define different parameters in diffe
                        args.dilation_growth_rate,
                        args.vq_act,
                        args.vq_norm,
-                       enc='transformer',
+                       enc=args.enc,
                        lgvq=args.lgvq)
 
 
@@ -151,6 +154,8 @@ for nb_iter in range(1, args.warm_up_iter):
         gt_motion, gt_motion_mask, text_mask = gt_motion
     elif len(gt_motion) == 4:
         gt_motion, gt_motion_mask, text_mask, name = gt_motion
+    elif len(gt_motion) == 5:
+        gt_motion, gt_motion_mask, text_mask, name, text = gt_motion
     else:
         gt_motion_mask, text_mask, name = None, None, None
     gt_motion = gt_motion.cuda().float() # (bs, 64, dim)
@@ -199,6 +204,8 @@ for nb_iter in range(1, args.total_iter + 1):
         gt_motion, gt_motion_mask, text_mask = gt_motion
     elif len(gt_motion) == 4:
         gt_motion, gt_motion_mask, text_mask, name = gt_motion
+    elif len(gt_motion) == 5:
+        gt_motion, gt_motion_mask, text_mask, name, text = gt_motion
     else:
         gt_motion_mask, text_mask = None, None
     gt_motion = gt_motion.cuda().float() # bs, nb_joints, joints_dim, seq_len

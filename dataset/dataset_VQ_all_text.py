@@ -306,7 +306,7 @@ class VQMotionDataset(data.Dataset):
             'feature_all': text_bert_feature_all
         }
 
-        return motion, motion_mask, text_mask, name
+        return motion, motion_mask, text_mask, name, text
 
 class DynamicMaskGenerator:
     def __init__(self, 

@@ -26,8 +26,12 @@ class VQVAE_251(nn.Module):
         self.quant = args.quantizer
         self.lgvq = lgvq
         if enc == 'cnn':
-            self.encoder = Encoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm)
-            self.decoder = Decoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm)
+            if 'down_vqvae' in args and args.down_vqvae == 1:
+                self.encoder = Encoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm)
+                self.decoder = Decoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm)
+            else:
+                self.encoder = Encoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, 1, width, depth, dilation_growth_rate, activation=activation, norm=norm)
+                self.decoder = Decoder_wo_upsample(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm)
         else:
             self.encoder = Encoder_Transformer(dim = 251 if args.dataname == 'kit' else 263, d_model=output_emb_width, num_layers = 2, down_sample=args.down_vqvae if 'down_vqvae' in args else False)
             if 'down_vqvae' in args and args.down_vqvae == 1:
@@ -98,6 +102,12 @@ class VQVAE_251(nn.Module):
         x_decoder = self.decoder(x_d)
         x_out = self.postprocess(x_decoder)
         return x_out
+    
+    def text_motion_topk(self, motion, text, text_mask=None, motion_mask=None, topk=5):
+        if self.lgvq == 1:
+            return self.lgvq_encoder.text_motion_topk(motion, text, text_mask, motion_mask, topk)
+        else:
+            return [], []
 
 
 
@@ -136,5 +146,8 @@ class HumanVQVAE(nn.Module):
     def forward_decoder(self, x):
         x_out = self.vqvae.forward_decoder(x)
         return x_out
+    
+    def text_motion_topk(self, motion, text, text_mask=None, motion_mask=None, topk=5):
+        return self.vqvae.text_motion_topk(motion, text, text_mask, motion_mask, topk)
 
 
