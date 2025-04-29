@@ -19,6 +19,61 @@ class Encoder(nn.Module):
                  depth = 3,
                  dilation_growth_rate = 3,
                  activation='relu',
+                 norm=None,
+                 causal=False):
+        super().__init__()
+        
+        blocks = []
+        if stride_t == 1:
+            pad_t, filter_t = 1, 3
+        else:
+            filter_t, pad_t = stride_t * 2, stride_t // 2
+        # filter_t, pad_t = stride_t * 2, stride_t // 2
+        if causal:
+            # blocks.append(nn.Conv1d(input_emb_width, width, 3, 1, 1))
+            blocks.append(nn.ConstantPad1d((2,0), 0))  # kernel_size=3的因果填充
+            blocks.append(nn.Conv1d(input_emb_width, width, 3, 1, 0))
+        else:
+            blocks.append(nn.Conv1d(input_emb_width, width, 3, 1, 1))
+        blocks.append(nn.ReLU())
+        
+        for i in range(down_t):
+            input_dim = width
+            if causal:
+                causal_pad = (filter_t-1)
+                block = nn.Sequential(
+                    nn.ConstantPad1d((causal_pad,0), 0),  # 左侧填充
+                    nn.Conv1d(input_dim, width, filter_t, stride_t, 0),
+                    Resnet1D(width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=causal),
+                )
+            else:
+                block = nn.Sequential(
+                    nn.Conv1d(input_dim, width, filter_t, stride_t, pad_t),
+                    Resnet1D(width, depth, dilation_growth_rate, activation=activation, norm=norm),
+                )
+            blocks.append(block)
+        if causal:
+            blocks.append(nn.ConstantPad1d((2,0), 0))  # kernel_size=3
+            blocks.append(nn.Conv1d(width, output_emb_width, 3, 1, 0))
+        else:
+            blocks.append(nn.Conv1d(width, output_emb_width, 3, 1, 1))
+        self.model = nn.Sequential(*blocks)
+
+    def forward(self, x, motion_mask = None):
+        if motion_mask is not None:
+            x = x * motion_mask.unsqueeze(1)
+        return self.model(x)
+
+class Encoder_causal(nn.Module):
+    def __init__(self,
+                 input_emb_width = 3,
+                 output_emb_width = 512,
+                 down_t = 3,
+                 stride_t = 2,
+                 width = 512,
+                 depth = 3,
+                 dilation_growth_rate = 3,
+                 activation='relu',
                  norm=None):
         super().__init__()
         
@@ -45,7 +100,6 @@ class Encoder(nn.Module):
         if motion_mask is not None:
             x = x * motion_mask.unsqueeze(1)
         return self.model(x)
-
 
 class CausalTransformerEncoder(nn.TransformerEncoder):
     """带因果掩码的Transformer编码器"""
@@ -114,7 +168,7 @@ class Encoder_Transformer(nn.Module):
                 motion_mask = motion_mask[:, ::4].clone()
             time_feat = self.time_transformer(motion_feature, src_key_padding_mask=~motion_mask)  # [T, B*7, d]
             if torch.isnan(time_feat).any():
-                    print(time_feat)
+                print(time_feat)
         else:
             if self.down_sample_flag:
                 motion_feature = self.down_sample(motion_feature)
@@ -361,7 +415,7 @@ class Dualsem_encoderv3(nn.Module):
             # text_feature, text_id = text
             # if text_mask is not None:
             input_ids = text_mask['input_ids'].to(motion.device)
-            labels = text_mask['labels'].to(motion.device).float()
+            labels_text = text_mask['labels'].to(motion.device).float()
             attention_mask = text_mask['attention_mask'].to(motion.device).bool()
             
             with torch.no_grad():
@@ -438,9 +492,9 @@ class Dualsem_encoderv3(nn.Module):
             # MLM预测
             logits = self.mlm_head(text_query)
             # 计算MLM任务的Top-K召回率
-            active_loss = (labels != -100).view(-1)
+            active_loss = (labels_text != -100).view(-1)
             active_logits = logits.view(-1, self.vocab_size)[active_loss]
-            active_labels = labels.view(-1)[active_loss]
+            active_labels = labels_text.view(-1)[active_loss]
             
             topk_values, topk_indices = active_logits.topk(k=5, dim=-1)  # [active_num, 5]
             active_labels = active_labels.long()  # [active_num]
@@ -619,7 +673,7 @@ class CausalDownsample(nn.Module):
         self.query = nn.Parameter(torch.randn(196 // (2**down_ratio), dim))
         
         self.causal_conv = nn.ModuleList([
-            TemporalDownsamplerHalf(dim, causal=True) for _ in range(down_ratio)
+            TemporalDownsampler(dim, causal=True) for _ in range(down_ratio)
         ])
         # 因果多头注意力
         self.attn = nn.MultiheadAttention(
@@ -636,7 +690,6 @@ class CausalDownsample(nn.Module):
             x_conv = layer(x_conv)  # [bs, seq//4, dim]
         
         # 步骤2：因果交叉注意力精调
-        # seq_len = x.size(1)
         causal_mask = create_cross_causal_mask(x_conv.size(1), x.size(1), x.device)
         
         attn_out, _ = self.attn(
@@ -738,18 +791,24 @@ class LabelSmoothingCrossEntropy(nn.Module):
     
 class TemporalDownsamplerHalf(nn.Module):
     """时间维度1/2降采样模块，使用单层卷积实现"""
-    def __init__(self, d_model, causal=False):
+    def __init__(self, d_model, causal=False, layer_norm=False):
         super().__init__()
+        if layer_norm:
+            layer = nn.LayerNorm(d_model)
+        else:
+            layer = nn.Identity()
         if causal:
             self.conv_layers = nn.Sequential(
                 RepeatFirstElementPad1d(padding=2),
                 nn.Conv1d(d_model, d_model, kernel_size=3, stride=2, padding=0),
-                # nn.GELU()
+                nn.GELU(),
+                layer
             )
         else:
             self.conv_layers = nn.Sequential(
                 nn.Conv1d(d_model, d_model, kernel_size=3, stride=2, padding=1),
-                # nn.GELU()
+                nn.GELU(),
+                layer
             )
         
     def forward(self, x):
@@ -761,6 +820,28 @@ class TemporalDownsamplerHalf(nn.Module):
         x = self.conv_layers(x)
         x = x.permute(0, 2, 1)  # [B, T//2, C]
         return x
+    
+class TemporalDownsampler(nn.Module):
+    """时间维度1/4降采样模块，使用单层卷积实现"""
+    def __init__(self, d_model, stride_t=2, depth=3, dilation_growth_rate=3, activation='relu', norm=None, causal=True):
+        super().__init__()
+        filter_t, pad_t = stride_t * 2, stride_t // 2
+        causal_pad = filter_t - 1
+        self.conv_layers = nn.Sequential(
+                nn.ConstantPad1d((causal_pad, 0), 0),  # 左侧填充
+                nn.Conv1d(d_model, d_model, filter_t, stride_t, 0),
+                Resnet1D(d_model, depth, dilation_growth_rate, activation=activation, norm=norm, causal=causal),
+            )
+
+    def forward(self, x):
+        """
+        输入形状: [B, T, C]
+        输出形状: [B, T//2, C]
+        """
+        x = x.permute(0, 2, 1)  # [B, C, T]
+        x = self.conv_layers(x)
+        x = x.permute(0, 2, 1)  # [B, T//2, C]
+        return x    
     
 class RepeatFirstElementPad1d(nn.Module):
     """自定义填充层：用第一个元素重复填充左侧"""

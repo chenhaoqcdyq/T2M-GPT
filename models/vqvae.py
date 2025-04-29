@@ -18,7 +18,8 @@ class VQVAE_251(nn.Module):
                  activation='relu',
                  norm=None,
                  enc='cnn',
-                 lgvq=0):
+                 lgvq=0,
+                 causal=False):
         
         super().__init__()
         self.code_dim = code_dim
@@ -27,10 +28,10 @@ class VQVAE_251(nn.Module):
         self.lgvq = lgvq
         if enc == 'cnn':
             if 'down_vqvae' in args and args.down_vqvae == 1:
-                self.encoder = Encoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm)
+                self.encoder = Encoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=causal)
                 self.decoder = Decoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm)
             else:
-                self.encoder = Encoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, 1, width, depth, dilation_growth_rate, activation=activation, norm=norm)
+                self.encoder = Encoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, 1, width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=causal)
                 self.decoder = Decoder_wo_upsample(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm)
         else:
             self.encoder = Encoder_Transformer(dim = 251 if args.dataname == 'kit' else 263, d_model=output_emb_width, num_layers = 2, down_sample=args.down_vqvae if 'down_vqvae' in args else False)
@@ -104,8 +105,10 @@ class VQVAE_251(nn.Module):
         return x_out
     
     def text_motion_topk(self, motion, text, text_mask=None, motion_mask=None, topk=5):
+        x_in = self.preprocess(motion)
+        x_encoder = self.encoder(x_in, motion_mask)
         if self.lgvq == 1:
-            return self.lgvq_encoder.text_motion_topk(motion, text, text_mask, motion_mask, topk)
+            return self.lgvq_encoder.text_motion_topk(self.preprocess(x_encoder), text, text_mask, motion_mask, topk)
         else:
             return [], []
 
@@ -125,12 +128,13 @@ class HumanVQVAE(nn.Module):
                  activation='relu',
                  norm=None,
                  enc='cnn',
-                 lgvq=0):
+                 lgvq=0,
+                 causal=False):
         
         super().__init__()
         
         self.nb_joints = 21 if args.dataname == 'kit' else 22
-        self.vqvae = VQVAE_251(args, nb_code, code_dim, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm, enc=enc, lgvq=lgvq)
+        self.vqvae = VQVAE_251(args, nb_code, code_dim, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm, enc=enc, lgvq=lgvq, causal=causal)
 
     def encode(self, x):
         b, t, c = x.size()

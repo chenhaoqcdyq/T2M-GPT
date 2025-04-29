@@ -116,7 +116,8 @@ net = vqvae.HumanVQVAE(args, ## use args to define different parameters in diffe
                        args.vq_act,
                        args.vq_norm,
                        enc=args.enc,
-                       lgvq=args.lgvq)
+                       lgvq=args.lgvq,
+                       causal=args.causal if 'causal' in args else 0)
 
 
 if args.resume_pth : 
@@ -147,15 +148,16 @@ for nb_iter in range(1, args.warm_up_iter):
     optimizer, current_lr = update_lr_warm_up(optimizer, nb_iter, args.warm_up_iter, args.lr)
     
     gt_motion = next(train_loader_iter)
-    if len(gt_motion) == 2:
-        gt_motion, gt_motion_mask = gt_motion
-        text_mask, name = None, None
-    elif len(gt_motion) == 3:
-        gt_motion, gt_motion_mask, text_mask = gt_motion
-    elif len(gt_motion) == 4:
-        gt_motion, gt_motion_mask, text_mask, name = gt_motion
-    elif len(gt_motion) == 5:
-        gt_motion, gt_motion_mask, text_mask, name, text = gt_motion
+    if isinstance(gt_motion, tuple):
+        if len(gt_motion) == 2:
+            gt_motion, gt_motion_mask = gt_motion
+            text_mask, name = None, None
+        elif len(gt_motion) == 3:
+            gt_motion, gt_motion_mask, text_mask = gt_motion
+        elif len(gt_motion) == 4:
+            gt_motion, gt_motion_mask, text_mask, name = gt_motion
+        elif len(gt_motion) == 5:
+            gt_motion, gt_motion_mask, text_mask, name, text = gt_motion
     else:
         gt_motion_mask, text_mask, name = None, None, None
     gt_motion = gt_motion.cuda().float() # (bs, 64, dim)
@@ -197,15 +199,16 @@ if args.freeze_encdec != 0 and args.lgvq != 0:
 for nb_iter in range(1, args.total_iter + 1):
     
     gt_motion = next(train_loader_iter)
-    if len(gt_motion) == 2:
-        gt_motion, gt_motion_mask = gt_motion
-        text_mask = None
-    elif len(gt_motion) == 3:
-        gt_motion, gt_motion_mask, text_mask = gt_motion
-    elif len(gt_motion) == 4:
-        gt_motion, gt_motion_mask, text_mask, name = gt_motion
-    elif len(gt_motion) == 5:
-        gt_motion, gt_motion_mask, text_mask, name, text = gt_motion
+    if isinstance(gt_motion, tuple):
+        if len(gt_motion) == 2:
+            gt_motion, gt_motion_mask = gt_motion
+            text_mask = None
+        elif len(gt_motion) == 3:
+            gt_motion, gt_motion_mask, text_mask = gt_motion
+        elif len(gt_motion) == 4:
+            gt_motion, gt_motion_mask, text_mask, name = gt_motion
+        elif len(gt_motion) == 5:
+            gt_motion, gt_motion_mask, text_mask, name, text = gt_motion
     else:
         gt_motion_mask, text_mask = None, None
     gt_motion = gt_motion.cuda().float() # bs, nb_joints, joints_dim, seq_len

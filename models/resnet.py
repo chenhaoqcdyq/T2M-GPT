@@ -10,10 +10,11 @@ class nonlinearity(nn.Module):
         return x * torch.sigmoid(x)
 
 class ResConv1DBlock(nn.Module):
-    def __init__(self, n_in, n_state, dilation=1, activation='silu', norm=None, dropout=None):
+    def __init__(self, n_in, n_state, dilation=1, activation='silu', norm=None, dropout=None, causal=False):
         super().__init__()
         padding = dilation
         self.norm = norm
+        self.causal = causal
         if norm == "LN":
             self.norm1 = nn.LayerNorm(n_in)
             self.norm2 = nn.LayerNorm(n_in)
@@ -41,9 +42,13 @@ class ResConv1DBlock(nn.Module):
             self.activation2 = nn.GELU()
             
         
-
-        self.conv1 = nn.Conv1d(n_in, n_state, 3, 1, padding, dilation)
-        self.conv2 = nn.Conv1d(n_state, n_in, 1, 1, 0,)     
+        if causal:
+            self.causal_pad = nn.ConstantPad1d(( (3-1)*dilation, 0 ), 0)  # 左侧填充
+            self.conv1 = nn.Conv1d(n_in, n_state, 3, 1, dilation=dilation, padding=0)
+            self.conv2 = nn.Conv1d(n_state, n_in, 1, 1, 0,)
+        else:
+            self.conv1 = nn.Conv1d(n_in, n_state, 3, 1, padding, dilation)
+            self.conv2 = nn.Conv1d(n_state, n_in, 1, 1, 0,)     
 
 
     def forward(self, x):
@@ -55,6 +60,8 @@ class ResConv1DBlock(nn.Module):
             x = self.norm1(x)
             x = self.activation1(x)
             
+        if self.causal:
+            x = self.causal_pad(x)
         x = self.conv1(x)
 
         if self.norm == "LN":
@@ -69,10 +76,10 @@ class ResConv1DBlock(nn.Module):
         return x
 
 class Resnet1D(nn.Module):
-    def __init__(self, n_in, n_depth, dilation_growth_rate=1, reverse_dilation=True, activation='relu', norm=None):
+    def __init__(self, n_in, n_depth, dilation_growth_rate=1, reverse_dilation=True, activation='relu', norm=None, causal=False):
         super().__init__()
         
-        blocks = [ResConv1DBlock(n_in, n_in, dilation=dilation_growth_rate ** depth, activation=activation, norm=norm) for depth in range(n_depth)]
+        blocks = [ResConv1DBlock(n_in, n_in, dilation=dilation_growth_rate ** depth, activation=activation, norm=norm, causal=causal) for depth in range(n_depth)]
         if reverse_dilation:
             blocks = blocks[::-1]
         
