@@ -26,7 +26,10 @@ warnings.filterwarnings('ignore')
 ##### ---- Exp dirs ---- #####
 args = option_trans.get_args_parser()
 torch.manual_seed(args.seed)
-vq_name = "VQVAE-T2MGPT-SEM-train-00043"
+
+exp_name = (args.resume_pth).replace('output/','')[:5]
+vq_name = f"VQVAE-T2MGPT-SEM-train-{exp_name}"
+print("vq_name = ", vq_name)
 # args.out_dir = os.path.join(args.out_dir, f'{args.exp_name}')
 desc = args.dataname
 outdir = args.out_dir
@@ -46,6 +49,40 @@ logger = utils_model.get_logger(args.out_dir)
 writer = SummaryWriter(args.out_dir)
 logger.info(json.dumps(vars(args), indent=4, sort_keys=True))
 
+##### ---- Network ---- #####
+clip_model, clip_preprocess = clip.load("ViT-B/32", device=torch.device('cuda'), jit=False)  # Must set jit=False for training
+clip.model.convert_weights(clip_model)  # Actually this line is unnecessary since clip by default already on float16
+clip_model.eval()
+for p in clip_model.parameters():
+    p.requires_grad = False
+path = os.path.dirname(args.resume_pth)
+json_file = os.path.join(path, 'train_config.json')
+with open(json_file, 'r') as f:
+    train_args_dict = json.load(f)  # dict
+args_vq = eval_trans.EasyDict(train_args_dict) 
+net = vqvae.HumanVQVAE(args_vq, ## use args to define different parameters in different quantizers
+                       args_vq.nb_code,
+                       args_vq.code_dim,
+                       args_vq.output_emb_width,
+                       args_vq.down_t,
+                       args_vq.stride_t,
+                       args_vq.width,
+                       args_vq.depth,
+                       args_vq.dilation_growth_rate,
+                       args_vq.vq_act,
+                    #    args.vq_norm,
+                       enc=args_vq.enc,
+                       lgvq=args_vq.lgvq,
+                       causal=args_vq.causal if 'causal' in args_vq else 0)
+
+
+print('loading checkpoint from {}'.format(args.resume_pth))
+ckpt = torch.load(args.resume_pth, map_location='cpu')
+net.load_state_dict(ckpt['net'], strict=True)
+net.eval()
+net.cuda()
+
+
 ##### ---- Dataloader ---- #####
 train_loader_token = dataset_tokenize.DATALoader(args.dataname, 1, unit_length=1)
 
@@ -58,28 +95,9 @@ dataset_opt_path = 'checkpoints/kit/Comp_v6_KLD005/opt.txt' if args.dataname == 
 wrapper_opt = get_opt(dataset_opt_path, torch.device('cuda'))
 eval_wrapper = EvaluatorModelWrapper(wrapper_opt)
 
-##### ---- Network ---- #####
-clip_model, clip_preprocess = clip.load("ViT-B/32", device=torch.device('cuda'), jit=False)  # Must set jit=False for training
-clip.model.convert_weights(clip_model)  # Actually this line is unnecessary since clip by default already on float16
-clip_model.eval()
-for p in clip_model.parameters():
-    p.requires_grad = False
 
-net = vqvae.HumanVQVAE(args, ## use args to define different parameters in different quantizers
-                       args.nb_code,
-                       args.code_dim,
-                       args.output_emb_width,
-                       args.down_t,
-                       args.stride_t,
-                       args.width,
-                       args.depth,
-                       args.dilation_growth_rate,
-                       args.vq_act,
-                    #    args.vq_norm,
-                       enc='transformer',
-                       lgvq=args.lgvq)
 
-if args.lgvq:
+if args_vq.lgvq:
     num_vq_trans = args.nb_code * 2 + 2
 else:
     num_vq_trans = args.nb_code
@@ -92,12 +110,6 @@ trans_encoder = trans.Text2Motion_Transformer(num_vq=num_vq_trans,
                                 drop_out_rate=args.drop_out_rate, 
                                 fc_rate=args.ff_rate)
 
-
-print ('loading checkpoint from {}'.format(args.resume_pth))
-ckpt = torch.load(args.resume_pth, map_location='cpu')
-net.load_state_dict(ckpt['net'], strict=True)
-net.eval()
-net.cuda()
 
 if args.resume_trans is not None:
     print ('loading transformer checkpoint from {}'.format(args.resume_trans))
@@ -155,17 +167,17 @@ for batch in tqdm(train_loader_token):
             sem_idx = sem_idx.cpu().numpy() # (1, x)
             np.save(pjoin(args.vq_dir, name[0] +'_sem.npy'), sem_idx)
 
-if args.lgvq:
+if args_vq.lgvq:
     from dataset import dataset_TM_train_sem as dataset_TM_train
 else:
     from dataset import dataset_TM_train
 
-train_loader = dataset_TM_train.DATALoader(args.dataname, args.batch_size, args.nb_code, vq_name, unit_length=1)
+train_loader = dataset_TM_train.DATALoader(args.dataname, args.batch_size, args.nb_code, vq_name, unit_length=4)
 train_loader_iter = dataset_TM_train.cycle(train_loader)
 
 ##### ---- Training ---- #####
-# best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, clip_model=clip_model, eval_wrapper=eval_wrapper)
-best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching = 1000, 0, 100, 0, 0, 0, 100
+best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, clip_model=clip_model, eval_wrapper=eval_wrapper)
+# best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching = 1000, 0, 100, 0, 0, 0, 100
 while nb_iter <= args.total_iter:
     
     batch = next(train_loader_iter)

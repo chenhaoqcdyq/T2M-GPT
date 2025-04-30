@@ -268,7 +268,7 @@ class Dualsem_encoderv3(nn.Module):
         else:
             self.time_downsamplers = CausalDownsample(d_model, down_sample)
             
-        
+        self.time_position = nn.Parameter(torch.randn(1, 196, d_model))  # 时间步编码(假设最大序列长度128)
         # if causal:
         self.time_transformer = CausalTransformerEncoder(
             nn.TransformerEncoderLayer(
@@ -559,21 +559,24 @@ class Dualsem_encoderv3(nn.Module):
             if self.ifdown_sample == 2:
                 time_feat = self.time_downsamplers(time_feat, padding_mask=~motion_mask)
                 motion_mask = motion_mask[:, ::4].clone()
+                time_feat = self.time_position[:, :time_feat.shape[1], :] + time_feat
                 time_feat = self.time_transformer(time_feat, src_key_padding_mask=~motion_mask)
             else:
                 # 在每一层Transformer后应用时间降采样
+                time_feat = self.time_position[:, :time_feat.shape[1], :] + time_feat
                 for i, layer in enumerate(self.time_transformer.layers):
                     time_feat = self.time_downsamplers[i](time_feat)
                     if self.ifdown_sample:
-                        # motion_mask = motion_mask[:, ::2]  # 更新mask
                         motion_mask = motion_mask[:, ::2].clone()  # 使用 clone() 创建副本
                     time_feat = layer(time_feat, src_key_padding_mask=~motion_mask)
         else:
             if self.ifdown_sample == 2:
                 time_feat = self.time_downsamplers(time_feat)
+                time_feat = self.time_position[:, :time_feat.shape[1], :] + time_feat
                 time_feat = self.time_transformer(time_feat)
             else:
                 # 在每一层Transformer后应用时间降采样
+                time_feat = self.time_position[:, :time_feat.shape[1], :] + time_feat
                 for i, layer in enumerate(self.time_transformer.layers):
                     time_feat = self.time_downsamplers[i](time_feat)
                     time_feat = layer(time_feat)

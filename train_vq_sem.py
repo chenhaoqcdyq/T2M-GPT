@@ -83,26 +83,7 @@ logger.info(f'Training on {args.dataname}, motions are with {args.nb_joints} joi
 
 wrapper_opt = get_opt(dataset_opt_path, torch.device('cuda'))
 eval_wrapper = EvaluatorModelWrapper(wrapper_opt)
-if args.all_motion:
-    if args.lgvq == 1:
-        import dataset.dataset_VQ_all_text as dataset_VQ
-    else:
-        import dataset.dataset_VQ_all as dataset_VQ
-else:
-    import dataset.dataset_VQ as dataset_VQ
-##### ---- Dataloader ---- #####
-train_loader = dataset_VQ.DATALoader(args.dataname,
-                                        args.batch_size,
-                                        window_size=args.window_size,
-                                        unit_length=2**args.down_t)
 
-train_loader_iter = dataset_VQ.cycle(train_loader)
-
-val_loader = dataset_TM_eval.DATALoader(args.dataname, False,
-                                        32,
-                                        w_vectorizer,
-                                        unit_length=2**args.down_t)
-print("args = ",args)
 ##### ---- Network ---- #####
 net = vqvae.HumanVQVAE(args, ## use args to define different parameters in different quantizers
                        args.nb_code,
@@ -132,6 +113,28 @@ net.cuda()
 if args.freeze_encdec != 0 and args.lgvq != 0:
     net = freeze_encdec(net)
 
+if args.all_motion:
+    if args.lgvq == 1:
+        import dataset.dataset_VQ_all_text as dataset_VQ
+    else:
+        import dataset.dataset_VQ_all as dataset_VQ
+else:
+    import dataset.dataset_VQ as dataset_VQ
+##### ---- Dataloader ---- #####
+train_loader = dataset_VQ.DATALoader(args.dataname,
+                                        args.batch_size,
+                                        window_size=args.window_size,
+                                        unit_length=2**args.down_t)
+
+train_loader_iter = dataset_VQ.cycle(train_loader)
+
+val_loader = dataset_TM_eval.DATALoader(args.dataname, False,
+                                        32,
+                                        w_vectorizer,
+                                        unit_length=2**args.down_t)
+print("args = ",args)
+
+
 ##### ---- Optimizer & Scheduler ---- #####
 optimizer = optim.AdamW(net.parameters(), lr=args.lr, betas=(0.9, 0.99), weight_decay=args.weight_decay)
 scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=args.lr_scheduler, gamma=args.gamma)
@@ -148,7 +151,7 @@ for nb_iter in range(1, args.warm_up_iter):
     optimizer, current_lr = update_lr_warm_up(optimizer, nb_iter, args.warm_up_iter, args.lr)
     
     gt_motion = next(train_loader_iter)
-    if isinstance(gt_motion, tuple):
+    if isinstance(gt_motion, tuple) or isinstance(gt_motion, list):
         if len(gt_motion) == 2:
             gt_motion, gt_motion_mask = gt_motion
             text_mask, name = None, None
@@ -199,7 +202,7 @@ if args.freeze_encdec != 0 and args.lgvq != 0:
 for nb_iter in range(1, args.total_iter + 1):
     
     gt_motion = next(train_loader_iter)
-    if isinstance(gt_motion, tuple):
+    if isinstance(gt_motion, tuple) or isinstance(gt_motion, list):
         if len(gt_motion) == 2:
             gt_motion, gt_motion_mask = gt_motion
             text_mask = None

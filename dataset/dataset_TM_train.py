@@ -7,7 +7,7 @@ import codecs as cs
 from tqdm import tqdm
 import utils.paramUtil as paramUtil
 from torch.utils.data._utils.collate import default_collate
-
+import os
 
 def collate_fn(batch):
     batch.sort(key=lambda x: x[3], reverse=True)
@@ -59,8 +59,11 @@ class Text2MotionDataset(data.Dataset):
         data_dict = {}
         for name in tqdm(id_list):
             try:
-                m_token_list = np.load(pjoin(self.data_root, tokenizer_name, '%s.npz'%name))
-                m_token_list = m_token_list['motion']
+                if os.path.exists(pjoin(self.data_root, tokenizer_name, '%s.npz'%name)):
+                    m_token_list = np.load(pjoin(self.data_root, tokenizer_name, '%s.npz'%name))
+                    m_token_list = m_token_list['motion']
+                elif os.path.exists(pjoin(self.data_root, tokenizer_name, '%s.npy'%name)):
+                    m_token_list = np.load(pjoin(self.data_root, tokenizer_name, '%s.npy'%name))
                 # Read text
                 with cs.open(pjoin(self.text_dir, name + '.txt')) as f:
                     text_data = []

@@ -27,6 +27,7 @@ class VQVAE_251(nn.Module):
         self.quant = args.quantizer
         self.lgvq = lgvq
         if enc == 'cnn':
+            print("enc == cnn, causal = ", causal)
             if 'down_vqvae' in args and args.down_vqvae == 1:
                 self.encoder = Encoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=causal)
                 self.decoder = Decoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm)
@@ -34,6 +35,7 @@ class VQVAE_251(nn.Module):
                 self.encoder = Encoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, 1, width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=causal)
                 self.decoder = Decoder_wo_upsample(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm)
         else:
+            print("enc == transformer, causal = ", causal)
             self.encoder = Encoder_Transformer(dim = 251 if args.dataname == 'kit' else 263, d_model=output_emb_width, num_layers = 2, down_sample=args.down_vqvae if 'down_vqvae' in args else False)
             if 'down_vqvae' in args and args.down_vqvae == 1:
                 self.decoder = Decoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm)
