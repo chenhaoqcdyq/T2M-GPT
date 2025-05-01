@@ -171,13 +171,16 @@ if args_vq.lgvq:
     from dataset import dataset_TM_train_sem as dataset_TM_train
 else:
     from dataset import dataset_TM_train
-
-train_loader = dataset_TM_train.DATALoader(args.dataname, args.batch_size, args.nb_code, vq_name, unit_length=4)
+if "down_vqvae" in args:
+    unit_length = 4 if args_vq.down_vqvae else 1
+else:
+    unit_length = 1
+train_loader = dataset_TM_train.DATALoader(args.dataname, args.batch_size, args.nb_code, vq_name, unit_length=unit_length)
 train_loader_iter = dataset_TM_train.cycle(train_loader)
 
 ##### ---- Training ---- #####
-best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, clip_model=clip_model, eval_wrapper=eval_wrapper)
-# best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching = 1000, 0, 100, 0, 0, 0, 100
+# best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, clip_model=clip_model, eval_wrapper=eval_wrapper)
+best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching = 1000, 0, 100, 0, 0, 0, 100
 while nb_iter <= args.total_iter:
     
     batch = next(train_loader_iter)
