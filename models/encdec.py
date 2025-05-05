@@ -241,6 +241,7 @@ class Decoder_wo_upsample(nn.Module):
 
     def forward(self, x):
         return self.model(x)
+    
 
 class Dualsem_encoderv3(nn.Module):
     def __init__(self, args,
@@ -268,8 +269,7 @@ class Dualsem_encoderv3(nn.Module):
         else:
             self.time_downsamplers = CausalDownsample(d_model, down_sample)
             
-        self.time_position = nn.Parameter(torch.randn(1, 196, d_model))  # 时间步编码(假设最大序列长度128)
-        # if causal:
+        self.time_position = nn.Parameter(torch.randn(1, 196, d_model))  # 时间步编码(假设最大序列长度196)
         self.time_transformer = CausalTransformerEncoder(
             nn.TransformerEncoderLayer(
                 d_model=d_model,
@@ -556,7 +556,7 @@ class Dualsem_encoderv3(nn.Module):
         time_feat = motion
         if motion_mask is not None:
             motion_mask = motion_mask.to(time_feat.device).bool()
-            if self.ifdown_sample == 2:
+            if self.ifdown_sample == 2:                
                 time_feat = self.time_downsamplers(time_feat, padding_mask=~motion_mask)
                 motion_mask = motion_mask[:, ::4].clone()
                 time_feat = self.time_position[:, :time_feat.shape[1], :] + time_feat

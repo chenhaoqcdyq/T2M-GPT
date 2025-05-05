@@ -49,7 +49,7 @@ class VQVAE_251(nn.Module):
             self.quantizer = QuantizeEMA(nb_code, code_dim, args)
         elif args.quantizer == "reset":
             self.quantizer = QuantizeReset(nb_code, code_dim, args)
-        
+        self.args = args
         if self.lgvq == 1:
             self.lgvq_encoder = Dualsem_encoderv3(args, d_model=output_emb_width, num_layers=2, down_sample=args.down_sample if 'down_sample' in args else 0)
 
@@ -83,6 +83,8 @@ class VQVAE_251(nn.Module):
         # Encode
         x_encoder = self.encoder(x_in, motion_mask)
         if self.lgvq == 1:
+            if self.args.down_vqvae == 1 and motion_mask is not None:
+                motion_mask = motion_mask[:, ::4].clone()
             cls_token, loss_lgvq, sem_quantized = self.lgvq_encoder(x_encoder.permute(0,2,1), text_mask=text_mask, motion_mask=motion_mask, text_id=text_id)
             contrastive_loss, mlm_loss = loss_lgvq
             loss_sem, perplexity_sem = sem_quantized

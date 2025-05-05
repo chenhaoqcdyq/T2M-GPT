@@ -171,8 +171,11 @@ if args_vq.lgvq:
     from dataset import dataset_TM_train_sem as dataset_TM_train
 else:
     from dataset import dataset_TM_train
-if "down_vqvae" in args:
-    unit_length = 4 if args_vq.down_vqvae else 1
+if "down_vqvae" in args_vq:
+    if args_vq.down_vqvae:
+        unit_length = 4
+    else:
+        unit_length = 1
 else:
     unit_length = 1
 train_loader = dataset_TM_train.DATALoader(args.dataname, args.batch_size, args.nb_code, vq_name, unit_length=unit_length)
@@ -248,7 +251,7 @@ while nb_iter <= args.total_iter:
         nb_sample_train = 0
 
     if nb_iter % args.eval_iter ==  0:
-        best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model=clip_model, eval_wrapper=eval_wrapper, semantic_flag=args.lgvq)
+        best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model=clip_model, eval_wrapper=eval_wrapper, semantic_flag=args_vq.lgvq)
 
     if nb_iter == args.total_iter: 
         msg_final = f"Train. Iter {best_iter} : FID. {best_fid:.5f}, Diversity. {best_div:.4f}, TOP1. {best_top1:.4f}, TOP2. {best_top2:.4f}, TOP3. {best_top3:.4f}"
