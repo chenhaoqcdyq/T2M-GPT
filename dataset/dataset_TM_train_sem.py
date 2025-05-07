@@ -139,7 +139,7 @@ class Text2MotionDataset(data.Dataset):
         #     else:
         #         m_tokens = m_tokens[1:]
         m_tokens = m_tokens + self.start_motion_idx
-        m_tokens_sem = np.concatenate([self.sem_start_idx * np.ones((1), dtype=int), sem_tokens,self.sem_end_idx * np.ones((1), dtype=int), m_tokens], axis=0)
+        m_tokens_sem = np.concatenate([sem_tokens, self.sem_end_idx * np.ones((1), dtype=int), m_tokens], axis=0)
         m_tokens_len = m_tokens_sem.shape[0]
         if m_tokens_len+1 < self.max_motion_length:
             m_tokens_result = np.concatenate([m_tokens_sem, np.ones((1), dtype=int) * self.mot_end_idx, np.ones((self.max_motion_length-1-m_tokens_len), dtype=int) * self.mot_pad_idx], axis=0)

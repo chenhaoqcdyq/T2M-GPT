@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from models.encdec import Dualsem_encoderv3, Encoder, Decoder, Encoder_Transformer, Decoder_wo_upsample
+from models.encdec import LGVQ, Dualsem_encoderv3, Encoder, Decoder, Encoder_Transformer, Decoder_wo_upsample
 from models.quantize_cnn import QuantizeEMAReset, Quantizer, QuantizeEMA, QuantizeReset
 
 
@@ -19,7 +19,8 @@ class VQVAE_251(nn.Module):
                  norm=None,
                  enc='cnn',
                  lgvq=0,
-                 causal=False):
+                 causal=False,
+                 dec_causal=False):
         
         super().__init__()
         self.code_dim = code_dim
@@ -30,17 +31,19 @@ class VQVAE_251(nn.Module):
             print("enc == cnn, causal = ", causal)
             if 'down_vqvae' in args and args.down_vqvae == 1:
                 self.encoder = Encoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=causal)
-                self.decoder = Decoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm)
+                self.decoder = Decoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=dec_causal)
             else:
                 self.encoder = Encoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, 1, width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=causal)
-                self.decoder = Decoder_wo_upsample(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm)
+                self.decoder = Decoder_wo_upsample(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=dec_causal)
         else:
-            print("enc == transformer, causal = ", causal)
+            if 'down_vqvae' not in args:
+                args.down_vqvae = 0
+            print("enc == transformer, causal = ", causal, "down_vqvae = ", args.down_vqvae)
             self.encoder = Encoder_Transformer(dim = 251 if args.dataname == 'kit' else 263, d_model=output_emb_width, num_layers = 2, down_sample=args.down_vqvae if 'down_vqvae' in args else False)
             if 'down_vqvae' in args and args.down_vqvae == 1:
-                self.decoder = Decoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm)
+                self.decoder = Decoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=dec_causal)
             else:
-                self.decoder = Decoder_wo_upsample(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm)
+                self.decoder = Decoder_wo_upsample(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=dec_causal)
         if args.quantizer == "ema_reset":
             self.quantizer = QuantizeEMAReset(nb_code, code_dim, args)
         elif args.quantizer == "orig":
@@ -52,6 +55,9 @@ class VQVAE_251(nn.Module):
         self.args = args
         if self.lgvq == 1:
             self.lgvq_encoder = Dualsem_encoderv3(args, d_model=output_emb_width, num_layers=2, down_sample=args.down_sample if 'down_sample' in args else 0)
+        elif self.lgvq == 2:
+            self.lgvq_encoder = LGVQ(args, d_model=output_emb_width, num_layers=2, down_sample=args.down_sample if 'down_sample' in args else 0)
+            
 
 
     def preprocess(self, x):
@@ -88,11 +94,16 @@ class VQVAE_251(nn.Module):
             cls_token, loss_lgvq, sem_quantized = self.lgvq_encoder(x_encoder.permute(0,2,1), text_mask=text_mask, motion_mask=motion_mask, text_id=text_id)
             contrastive_loss, mlm_loss = loss_lgvq
             loss_sem, perplexity_sem = sem_quantized
-        else:
+        elif self.lgvq == 0:
             contrastive_loss, mlm_loss, loss_sem, perplexity_sem = torch.tensor(0), torch.tensor(0), torch.tensor(0), torch.tensor(0)
         ## quantization
         x_quantized, loss, perplexity  = self.quantizer(x_encoder)
-
+        if self.lgvq == 2:
+            if self.args.down_vqvae == 1 and motion_mask is not None:
+                motion_mask = motion_mask[:, ::4].clone()
+            cls_token, loss_lgvq, sem_quantized = self.lgvq_encoder(x_quantized.permute(0,2,1), text_mask=text_mask, motion_mask=motion_mask, text_id=text_id)
+            contrastive_loss, mlm_loss = loss_lgvq
+            loss_sem, perplexity_sem = sem_quantized
         ## decoder
         x_decoder = self.decoder(x_quantized)
         x_out = self.postprocess(x_decoder)
@@ -133,12 +144,13 @@ class HumanVQVAE(nn.Module):
                  norm=None,
                  enc='cnn',
                  lgvq=0,
-                 causal=False):
+                 causal=False,
+                 dec_causal=False):
         
         super().__init__()
         
         self.nb_joints = 21 if args.dataname == 'kit' else 22
-        self.vqvae = VQVAE_251(args, nb_code, code_dim, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm, enc=enc, lgvq=lgvq, causal=causal)
+        self.vqvae = VQVAE_251(args, nb_code, code_dim, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm, enc=enc, lgvq=lgvq, causal=causal, dec_causal=dec_causal)
 
     def encode(self, x):
         b, t, c = x.size()

@@ -66,6 +66,7 @@ def get_args_parser():
     parser.add_argument('--down_vqvae', default=0, type=int, help='down sample vqvae')
     parser.add_argument('--enc', default='transformer', type=str, help='down sample vqvae')
     parser.add_argument('--causal', default=0, type=int, help='causal')
+    parser.add_argument('--dec_causal', default=0, type=int, help='decausal')
     # parser.add_argument('--sem_nb_code', default=256, type=int, help='number of sem quantizers')
     
     return parser.parse_args()

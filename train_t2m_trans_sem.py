@@ -48,6 +48,10 @@ os.makedirs(args.vq_dir, exist_ok = True)
 logger = utils_model.get_logger(args.out_dir)
 writer = SummaryWriter(args.out_dir)
 logger.info(json.dumps(vars(args), indent=4, sort_keys=True))
+args.args_save_dir = os.path.join(args.out_dir, 'train_config.json')
+args_dict = vars(args)
+with open(args.args_save_dir, 'wt') as f:
+    json.dump(args_dict, f, indent=4)
 
 ##### ---- Network ---- #####
 clip_model, clip_preprocess = clip.load("ViT-B/32", device=torch.device('cuda'), jit=False)  # Must set jit=False for training
@@ -98,7 +102,7 @@ eval_wrapper = EvaluatorModelWrapper(wrapper_opt)
 
 
 if args_vq.lgvq:
-    num_vq_trans = args.nb_code * 2 + 2
+    num_vq_trans = args.nb_code * 2 + 1
 else:
     num_vq_trans = args.nb_code
 trans_encoder = trans.Text2Motion_Transformer(num_vq=num_vq_trans, 
@@ -182,8 +186,8 @@ train_loader = dataset_TM_train.DATALoader(args.dataname, args.batch_size, args.
 train_loader_iter = dataset_TM_train.cycle(train_loader)
 
 ##### ---- Training ---- #####
-# best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, clip_model=clip_model, eval_wrapper=eval_wrapper)
-best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching = 1000, 0, 100, 0, 0, 0, 100
+best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, clip_model=clip_model, eval_wrapper=eval_wrapper, semantic_flag=args_vq.lgvq)
+# best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching = 1000, 0, 100, 0, 0, 0, 100
 while nb_iter <= args.total_iter:
     
     batch = next(train_loader_iter)

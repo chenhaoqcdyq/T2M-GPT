@@ -18,6 +18,7 @@ from models.evaluator_wrapper import EvaluatorModelWrapper
 import warnings
 warnings.filterwarnings('ignore')
 from utils.word_vectorizer import WordVectorizer
+from models.tma.models.architectures.temos.textencoder.distillbert_actor import DistilbertActorAgnosticEncoder
 torch.autograd.set_detect_anomaly(True)
 def freeze_encdec(net):
     for name, param in net.named_parameters():
@@ -98,7 +99,8 @@ net = vqvae.HumanVQVAE(args, ## use args to define different parameters in diffe
                        args.vq_norm,
                        enc=args.enc,
                        lgvq=args.lgvq,
-                       causal=args.causal if 'causal' in args else 0)
+                       causal=args.causal if 'causal' in args else 0,
+                       dec_causal=args.dec_causal if 'dec_causal' in args else 0)
 
 
 if args.resume_pth : 
@@ -114,7 +116,7 @@ if args.freeze_encdec != 0 and args.lgvq != 0:
     net = freeze_encdec(net)
 
 if args.all_motion:
-    if args.lgvq == 1:
+    if args.lgvq >= 1:
         import dataset.dataset_VQ_all_text as dataset_VQ
     else:
         import dataset.dataset_VQ_all as dataset_VQ
@@ -132,6 +134,13 @@ val_loader = dataset_TM_eval.DATALoader(args.dataname, False,
                                         32,
                                         w_vectorizer,
                                         unit_length=2**args.down_t)
+if args.lgvq >= 1:
+    val_text_loader = dataset_VQ.DATALoader(args.dataname,
+                                        32,
+                                        window_size=args.window_size,
+                                        unit_length=2**args.down_t,
+                                        val=True)
+    # val_text_loader_iter = dataset_VQ.cycle(val_text_loader)
 print("args = ",args)
 
 
@@ -197,6 +206,8 @@ for nb_iter in range(1, args.warm_up_iter):
 ##### ---- Training ---- #####
 avg_recons, avg_perplexity, avg_commit, avg_contrastive, avg_mlm = 0., 0., 0., 0., 0.
 best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger, best_mpjpe = eval_trans.evaluation_vqvae(args.run_dir, val_loader, net, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, eval_wrapper=eval_wrapper, draw=False, best_mpjpe=100)
+if args.lgvq >= 1:
+    R1, R2 = eval_trans.evaluation_vqvae_text(val_text_loader, net)
 if args.freeze_encdec != 0 and args.lgvq != 0:
     net = freeze_encdec(net)
 for nb_iter in range(1, args.total_iter + 1):
