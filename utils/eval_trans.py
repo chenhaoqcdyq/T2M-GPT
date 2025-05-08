@@ -449,13 +449,16 @@ def evaluation_transformer_test(out_dir, val_loader, net, trans, logger, writer,
                             draw_name.append(name[k])
 
             et_pred, em_pred = eval_wrapper.get_co_embeddings(word_embeddings, pos_one_hots, sent_len, pred_pose_eval, pred_len)
-
+            if torch.isnan(em_pred).any():
+                print(em_pred)
             motion_multimodality_batch.append(em_pred.reshape(bs, 1, -1))
             
             if i == 0:
                 pose = pose.cuda().float()
                 
                 et, em = eval_wrapper.get_co_embeddings(word_embeddings, pos_one_hots, sent_len, pose, m_length)
+                if torch.isnan(em).any():
+                    print(em)
                 motion_annotation_list.append(em)
                 motion_pred_list.append(em_pred)
 

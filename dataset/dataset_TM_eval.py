@@ -75,6 +75,9 @@ class Text2MotionDataset(data.Dataset):
                 motion = np.load(pjoin(self.motion_dir, name + '.npy'))
                 if (len(motion)) < min_motion_len or (len(motion) >= 200):
                     continue
+                if np.isnan(motion).any():
+                    print("motion is nan", name)
+                    continue
                 text_data = []
                 flag = False
                 with cs.open(pjoin(self.text_dir, name + '.txt')) as f:
