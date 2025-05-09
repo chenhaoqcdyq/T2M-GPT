@@ -273,7 +273,8 @@ class LGVQ(nn.Module):
                  vocab_size=30522,
                  dropout=0.2,   # 增加dropout率
                  down_sample = 0,
-                 causal = True):  
+                 causal = True,
+                 layer_norm = False):  
         super().__init__()
         self.vocab_size = vocab_size
         self.args = args
@@ -281,7 +282,7 @@ class LGVQ(nn.Module):
         self.ifdown_sample = down_sample
         if down_sample==1:
             self.time_downsamplers = nn.ModuleList([
-                TemporalDownsamplerHalf(d_model, causal=causal) for _ in range(num_layers)
+                TemporalDownsamplerHalf(d_model, causal=causal, layer_norm=layer_norm) for _ in range(num_layers)
             ])
         elif down_sample==0:
             self.time_downsamplers = nn.ModuleList([

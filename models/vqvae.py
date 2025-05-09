@@ -34,7 +34,7 @@ class VQVAE_251(nn.Module):
                 self.decoder = Decoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=dec_causal)
             else:
                 self.encoder = Encoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, 1, width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=causal)
-                self.decoder = Decoder_wo_upsample(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=dec_causal)
+                self.decoder = Decoder_wo_upsample(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm)
         else:
             if 'down_vqvae' not in args:
                 args.down_vqvae = 0
@@ -101,7 +101,9 @@ class VQVAE_251(nn.Module):
         if self.lgvq == 2:
             if self.args.down_vqvae == 1 and motion_mask is not None:
                 motion_mask = motion_mask[:, ::4].clone()
-            cls_token, loss_lgvq, sem_quantized = self.lgvq_encoder(x_quantized.permute(0,2,1), text_mask=text_mask, motion_mask=motion_mask, text_id=text_id)
+            if "layer_norm" not in self.args:
+                self.args.layer_norm = 0
+            cls_token, loss_lgvq, sem_quantized = self.lgvq_encoder(x_quantized.permute(0,2,1), text_mask=text_mask, motion_mask=motion_mask, text_id=text_id, layer_norm=self.args.layer_norm)
             contrastive_loss, mlm_loss = loss_lgvq
             loss_sem, perplexity_sem = sem_quantized
         ## decoder
