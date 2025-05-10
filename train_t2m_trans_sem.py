@@ -101,7 +101,7 @@ eval_wrapper = EvaluatorModelWrapper(wrapper_opt)
 
 
 
-if args_vq.lgvq:
+if args_vq.lgvq == 1:
     num_vq_trans = args.nb_code * 2 + 1
 else:
     num_vq_trans = args.nb_code
@@ -171,7 +171,7 @@ for batch in tqdm(train_loader_token):
             sem_idx = sem_idx.cpu().numpy() # (1, x)
             np.save(pjoin(args.vq_dir, name[0] +'_sem.npy'), sem_idx)
 
-if args_vq.lgvq:
+if args_vq.lgvq == 1:
     from dataset import dataset_TM_train_sem as dataset_TM_train
 else:
     from dataset import dataset_TM_train
@@ -255,7 +255,7 @@ while nb_iter <= args.total_iter:
         nb_sample_train = 0
 
     if nb_iter % args.eval_iter ==  0:
-        best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model=clip_model, eval_wrapper=eval_wrapper, semantic_flag=args_vq.lgvq)
+        best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model=clip_model, eval_wrapper=eval_wrapper, semantic_flag=(args_vq.lgvq==1))
 
     if nb_iter == args.total_iter: 
         msg_final = f"Train. Iter {best_iter} : FID. {best_fid:.5f}, Diversity. {best_div:.4f}, TOP1. {best_top1:.4f}, TOP2. {best_top2:.4f}, TOP3. {best_top3:.4f}"

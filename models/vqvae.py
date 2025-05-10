@@ -56,7 +56,7 @@ class VQVAE_251(nn.Module):
         if self.lgvq == 1:
             self.lgvq_encoder = Dualsem_encoderv3(args, d_model=output_emb_width, num_layers=2, down_sample=args.down_sample if 'down_sample' in args else 0)
         elif self.lgvq == 2:
-            self.lgvq_encoder = LGVQ(args, d_model=output_emb_width, num_layers=2, down_sample=args.down_sample if 'down_sample' in args else 0)
+            self.lgvq_encoder = LGVQ(args, d_model=output_emb_width, num_layers=2, down_sample=args.down_sample if 'down_sample' in args else 0, layer_norm=args.layer_norm if 'layer_norm' in args else False)
             
 
 
@@ -101,8 +101,6 @@ class VQVAE_251(nn.Module):
         if self.lgvq == 2:
             if self.args.down_vqvae == 1 and motion_mask is not None:
                 motion_mask = motion_mask[:, ::4].clone()
-            if "layer_norm" not in self.args:
-                self.args.layer_norm = 0
             cls_token, loss_lgvq, sem_quantized = self.lgvq_encoder(x_quantized.permute(0,2,1), text_mask=text_mask, motion_mask=motion_mask, text_id=text_id, layer_norm=self.args.layer_norm)
             contrastive_loss, mlm_loss = loss_lgvq
             loss_sem, perplexity_sem = sem_quantized
