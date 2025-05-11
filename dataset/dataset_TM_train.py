@@ -143,7 +143,7 @@ class Text2MotionDataset(data.Dataset):
 
 def DATALoader(dataset_name,
                 batch_size, codebook_size, tokenizer_name, unit_length=4,
-                num_workers = 8) : 
+                num_workers = 8, sample_way = 0) : 
 
     train_loader = torch.utils.data.DataLoader(Text2MotionDataset(dataset_name, codebook_size = codebook_size, tokenizer_name = tokenizer_name, unit_length=unit_length),
                                               batch_size,

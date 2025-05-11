@@ -184,7 +184,7 @@ if "down_vqvae" in args_vq:
         unit_length = 1
 else:
     unit_length = 1
-if 'sample_way' not in args_vq:
+if 'sample_way' not in args:
     args.sample_way = 0
 train_loader = dataset_TM_train.DATALoader(args.dataname, args.batch_size, args.nb_code, vq_name, unit_length=unit_length, sample_way=args.sample_way)
 train_loader_iter = dataset_TM_train.cycle(train_loader)

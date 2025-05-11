@@ -137,8 +137,8 @@ class Text2MotionDataset(data.Dataset):
                 m_tokens_result = np.concatenate([m_tokens_sem, np.ones((1), dtype=int) * self.mot_end_idx], axis=0)
         elif self.sample_way == 1:
             # 确保sem_tokens长度是m_tokens的1/4
-            sem_len = len(m_tokens) // 4
-            sem_tokens = sem_tokens[:sem_len]
+            # sem_len = len(m_tokens) // 4
+            # sem_tokens = sem_tokens[:sem_len]
             
             # 创建穿插序列
             m_tokens = m_tokens + self.start_motion_idx
