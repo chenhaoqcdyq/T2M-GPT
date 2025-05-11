@@ -1223,21 +1223,21 @@ class TemporalDownsamplerHalf(nn.Module):
     def __init__(self, d_model, causal=False, layer_norm=False):
         super().__init__()
         if layer_norm:
-            layer = nn.LayerNorm(d_model)
+            self.layernorm = nn.LayerNorm(d_model)
         else:
-            layer = nn.Identity()
+            self.layernorm = nn.Identity()
         if causal:
             self.conv_layers = nn.Sequential(
                 RepeatFirstElementPad1d(padding=2),
                 nn.Conv1d(d_model, d_model, kernel_size=3, stride=2, padding=0),
                 nn.GELU(),
-                layer
+                # layer
             )
         else:
             self.conv_layers = nn.Sequential(
                 nn.Conv1d(d_model, d_model, kernel_size=3, stride=2, padding=1),
                 nn.GELU(),
-                layer
+                # layer
             )
         
     def forward(self, x):
@@ -1248,6 +1248,7 @@ class TemporalDownsamplerHalf(nn.Module):
         x = x.permute(0, 2, 1)  # [B, C, T]
         x = self.conv_layers(x)
         x = x.permute(0, 2, 1)  # [B, T//2, C]
+        x = self.layernorm(x)
         return x
     
 class TemporalDownsampler(nn.Module):

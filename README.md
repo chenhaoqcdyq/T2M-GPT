@@ -190,7 +190,7 @@ python3 train_vq.py \
 --recons-loss l1_smooth \
 --exp-name VQVAE
 
-python train_vq_sem.py --batch-size 128 --lr 5e-5 --total-iter 300000 --lr-scheduler 200000 --nb-code 512 --down-t 2 --depth 3 --dilation-growth-rate 3 --out-dir output --dataname t2m --vq-act relu --quantizer ema_reset --loss-vel 0.5 --recons-loss l1_smooth --exp-name VQVAE_lgvq --all_motion=1 --lgvq=1 --resume-pth=output/00009-t2m-VQVAE_lgvq/VQVAE-VQVAE_lgvq-t2m/net_last.pth
+python train_vq_sem.py --batch-size 256 --lr 2e-4 --total-iter 300000 --lr-scheduler 200000 --nb-code 512 --down-t 1 --depth 3 --dilation-growth-rate 3 --out-dir output --dataname t2m --vq-act relu --quantizer ema_reset --loss-vel 0.5 --recons-loss l1_smooth --exp-name VQVAE_down1_cnn --all_motion=0 --lgvq=0 --enc=cnn --down_vqvae=0 --causal=1
 ```
 
 </details>

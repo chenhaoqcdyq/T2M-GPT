@@ -67,5 +67,6 @@ def get_args_parser():
     parser.add_argument('--lgvq', type=int, default=1, help='use lgvq')
     parser.add_argument('--num_quantizers', default=1, type=int, help='number of sem quantizers')
     parser.add_argument('--down_sample', default=0, type=int, help='down sample')
+    parser.add_argument('--sample_way', default=0, type=int, help='sample way')
     
     return parser.parse_args()

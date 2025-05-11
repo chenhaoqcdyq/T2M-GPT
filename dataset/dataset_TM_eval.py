@@ -73,7 +73,7 @@ class Text2MotionDataset(data.Dataset):
         for name in tqdm(id_list):
             try:
                 motion = np.load(pjoin(self.motion_dir, name + '.npy'))
-                if (len(motion)) < min_motion_len or (len(motion) >= 200):
+                if (len(motion)) < min_motion_len or (len(motion) >= self.max_motion_length + self.unit_length):
                     continue
                 if np.isnan(motion).any():
                     print("motion is nan", name)

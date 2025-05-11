@@ -137,12 +137,12 @@ nb_sample_train = 0
 generate_idx = False
 for batch in tqdm(train_loader_token):
     pose, name, text = batch
-    if os.path.exists(pjoin(args.vq_dir, name[0] +'.npy')):
-        if args.lgvq:
-            if os.path.exists(pjoin(args.vq_dir, name[0] +'_sem.npy')):
-                continue
-        else:
-            continue
+    # if os.path.exists(pjoin(args.vq_dir, name[0] +'.npy')):
+    #     if args.lgvq:
+    #         if os.path.exists(pjoin(args.vq_dir, name[0] +'_sem.npy')):
+    #             continue
+    #     else:
+    #         continue
     bs, seq = pose.shape[0], pose.shape[1]
 
     pose = pose.cuda().float() # bs, nb_joints, joints_dim, seq_len (1,124,263)
@@ -178,11 +178,15 @@ else:
 if "down_vqvae" in args_vq:
     if args_vq.down_vqvae:
         unit_length = 4
+    elif args_vq.down_t == 1:
+        unit_length = 2
     else:
         unit_length = 1
 else:
     unit_length = 1
-train_loader = dataset_TM_train.DATALoader(args.dataname, args.batch_size, args.nb_code, vq_name, unit_length=unit_length)
+if 'sample_way' not in args_vq:
+    args.sample_way = 0
+train_loader = dataset_TM_train.DATALoader(args.dataname, args.batch_size, args.nb_code, vq_name, unit_length=unit_length, sample_way=args.sample_way)
 train_loader_iter = dataset_TM_train.cycle(train_loader)
 
 ##### ---- Training ---- #####

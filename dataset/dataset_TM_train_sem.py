@@ -16,7 +16,7 @@ def collate_fn(batch):
 
 '''For use of training text-2-motion generative model'''
 class Text2MotionDataset(data.Dataset):
-    def __init__(self, dataset_name, feat_bias = 5, unit_length = 4, codebook_size = 1024, tokenizer_name=None, sem_codebook_size=512, down_sample = True):
+    def __init__(self, dataset_name, feat_bias = 5, unit_length = 4, codebook_size = 1024, tokenizer_name=None, sem_codebook_size=512, down_sample = True, sample_way = 0):
         self.down_sample = down_sample
         self.max_length = 64
         self.pointer = 0
@@ -29,7 +29,7 @@ class Text2MotionDataset(data.Dataset):
         self.mot_end_idx = codebook_size + self.start_motion_idx
         self.mot_pad_idx = self.mot_end_idx + 1
         
-        
+        self.sample_way = sample_way
         
         if dataset_name == 't2m':
             self.data_root = './dataset/HumanML3D'
@@ -127,25 +127,39 @@ class Text2MotionDataset(data.Dataset):
         text_data = random.choice(text_list)
         caption= text_data['caption']
 
-        
-        # if self.
-        # coin = np.random.choice([False, False, True])
-        # # print(len(m_tokens))
-        # if coin:
-        #     # drop one token at the head or tail
-        #     coin2 = np.random.choice([True, False])
-        #     if coin2:
-        #         m_tokens = m_tokens[:-1]
-        #     else:
-        #         m_tokens = m_tokens[1:]
-        m_tokens = m_tokens + self.start_motion_idx
-        m_tokens_sem = np.concatenate([sem_tokens, self.sem_end_idx * np.ones((1), dtype=int), m_tokens], axis=0)
-        m_tokens_len = m_tokens_sem.shape[0]
-        if m_tokens_len+1 < self.max_motion_length:
-            m_tokens_result = np.concatenate([m_tokens_sem, np.ones((1), dtype=int) * self.mot_end_idx, np.ones((self.max_motion_length-1-m_tokens_len), dtype=int) * self.mot_pad_idx], axis=0)
-        else:
-            m_tokens_result = np.concatenate([m_tokens_sem, np.ones((1), dtype=int) * self.mot_end_idx], axis=0)
+        if self.sample_way == 0:
+            m_tokens = m_tokens + self.start_motion_idx
+            m_tokens_sem = np.concatenate([sem_tokens, self.sem_end_idx * np.ones((1), dtype=int), m_tokens], axis=0)
+            m_tokens_len = m_tokens_sem.shape[0]
+            if m_tokens_len+1 < self.max_motion_length:
+                m_tokens_result = np.concatenate([m_tokens_sem, np.ones((1), dtype=int) * self.mot_end_idx, np.ones((self.max_motion_length-1-m_tokens_len), dtype=int) * self.mot_pad_idx], axis=0)
+            else:
+                m_tokens_result = np.concatenate([m_tokens_sem, np.ones((1), dtype=int) * self.mot_end_idx], axis=0)
+        elif self.sample_way == 1:
+            # 确保sem_tokens长度是m_tokens的1/4
+            sem_len = len(m_tokens) // 4
+            sem_tokens = sem_tokens[:sem_len]
+            
+            # 创建穿插序列
+            m_tokens = m_tokens + self.start_motion_idx
+            
+            # 按照模式穿插排列
+            m_tokens_sem = []
+            for i in range(0, len(m_tokens)):
+                if i % 4 == 0:
+                    # 添加sem_tokens
+                    m_tokens_sem.append(sem_tokens[i // 4])
+                m_tokens_sem.append(m_tokens[i])
 
+            
+            m_tokens_sem = np.array(m_tokens_sem)
+            m_tokens_len = m_tokens_sem.shape[0]
+            
+            # 添加end token和padding
+            if m_tokens_len+1 < self.max_motion_length:
+                m_tokens_result = np.concatenate([m_tokens_sem, np.ones((1), dtype=int) * self.mot_end_idx, np.ones((self.max_motion_length-1-m_tokens_len), dtype=int) * self.mot_pad_idx], axis=0)
+            else:
+                m_tokens_result = np.concatenate([m_tokens_sem, np.ones((1), dtype=int) * self.mot_end_idx], axis=0)
         return caption, m_tokens_result.reshape(-1), m_tokens_len
 
 
@@ -153,9 +167,9 @@ class Text2MotionDataset(data.Dataset):
 
 def DATALoader(dataset_name,
                 batch_size, codebook_size, tokenizer_name, unit_length=4,
-                num_workers = 8) : 
+                num_workers = 8, sample_way = 0) : 
 
-    train_loader = torch.utils.data.DataLoader(Text2MotionDataset(dataset_name, codebook_size = codebook_size, tokenizer_name = tokenizer_name, unit_length=unit_length),
+    train_loader = torch.utils.data.DataLoader(Text2MotionDataset(dataset_name, codebook_size = codebook_size, tokenizer_name = tokenizer_name, unit_length=unit_length, sample_way=sample_way),
                                               batch_size,
                                               shuffle=True,
                                               num_workers=num_workers,
