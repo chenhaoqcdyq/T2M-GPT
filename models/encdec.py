@@ -706,6 +706,7 @@ class Dualsem_encoderv3(nn.Module):
             ),
             num_layers=num_layers
         )
+        self.time_position = nn.Parameter(torch.randn(1, 196, d_model))
 
         # BERT
         self.bert_model = BertModel.from_pretrained('bert-base-uncased')
@@ -799,34 +800,44 @@ class Dualsem_encoderv3(nn.Module):
         feature = time_feat
         sem_idx = self.sem_quantizer.quantize(feature)
         return sem_idx
-        
-    def text_motion_topk(self, motion, text, text_mask=None, motion_mask=None, topk=5):
+    
+    def text_motion_topk(self, motion, text, motion_mask=None, topk=5, text_mask=None):
+        """
+        计算动作和文本之间的Top-K匹配
+        Args:
+            motion: 动作特征列表 [6, B, T, D]
+            text: 文本字符串
+            motion_mask: 动作掩码 [B, T]
+            topk: 返回的top-k结果数
+            text_mask: 文本掩码字典
+        Returns:
+            [r1, r3, r5]: 召回率指标
+            [r1_mlm, r3_mlm, r5_mlm]: MLM任务的召回率指标
+        """
+        # 部件特征预处理
         B, T = motion.shape[0], motion.shape[1]
+    
+        # 数据增强
+        if self.training:
+            motion = self.motion_aug(motion)
+            
         # 时间特征处理
         time_feat = motion
         if motion_mask is not None:
             motion_mask = motion_mask.to(time_feat.device).bool()
-            if self.ifdown_sample == 2:
-                time_feat = self.time_downsamplers(time_feat, padding_mask=~motion_mask)
-                motion_mask = motion_mask[:, ::4].clone()
-                time_feat = self.time_transformer(time_feat, src_key_padding_mask=~motion_mask)
-            else:
-                # 在每一层Transformer后应用时间降采样
-                for i, layer in enumerate(self.time_transformer.layers):
-                    time_feat = self.time_downsamplers[i](time_feat)
-                    if self.ifdown_sample:
-                        # motion_mask = motion_mask[:, ::2]  # 更新mask
-                        motion_mask = motion_mask[:, ::2].clone()  # 使用 clone() 创建副本
-                    time_feat = layer(time_feat, src_key_padding_mask=~motion_mask)
+            
+            # 在每一层Transformer后应用时间降采样
+            for i, layer in enumerate(self.time_transformer.layers):
+                time_feat = self.time_downsamplers[i](time_feat)
+                if self.ifdown_sample:
+                    # motion_mask = motion_mask[:, ::2]  # 更新mask
+                    motion_mask = motion_mask[:, ::2].clone()  # 使用 clone() 创建副本
+                time_feat = layer(time_feat, src_key_padding_mask=~motion_mask)
         else:
-            if self.ifdown_sample == 2:
-                time_feat = self.time_downsamplers(time_feat)
-                time_feat = self.time_transformer(time_feat)
-            else:
-                # 在每一层Transformer后应用时间降采样
-                for i, layer in enumerate(self.time_transformer.layers):
-                    time_feat = self.time_downsamplers[i](time_feat)
-                    time_feat = layer(time_feat)
+            # 在每一层Transformer后应用时间降采样
+            for i, layer in enumerate(self.time_transformer.layers):
+                time_feat = self.time_downsamplers[i](time_feat)
+                time_feat = layer(time_feat)
             
         # 特征重组
         feature = time_feat
@@ -836,12 +847,59 @@ class Dualsem_encoderv3(nn.Module):
             cls_token, loss_commit, perplexity = self.sem_quantizer(feature.permute(0,2,1))
         cls_token = cls_token.permute(0,2,1)
         global_feat = cls_token.mean(dim=1)
+        motion_feature_global = self.motion_text_proj(global_feat)
+
+          # 文本特征提取
+        bert_tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+        encoded = bert_tokenizer(
+            text,
+            padding='max_length',
+            truncation=True,
+            max_length=128,
+            return_tensors='pt'
+        )
+        for k, v in encoded.items():
+            encoded[k] = v.to(motion[0].device)
+        bert_outputs = self.bert_model(**encoded)
+        text_feature = bert_outputs.pooler_output.to(motion[0].device).float()
+        text_feature_pooler = self.text_motion_proj(text_feature)
+        
+        # 计算相似度矩阵
+        motion_feature_global = F.normalize(motion_feature_global, p=2, dim=-1)  # [B, d]
+        text_feature_pooler = F.normalize(text_feature_pooler, p=2, dim=-1)       # [B, d]
+        similarity_matrix = torch.mm(motion_feature_global, text_feature_pooler.T)
+        
+        # 计算召回指标
+        batch_size = similarity_matrix.size(0)
+        labels = torch.arange(batch_size).to(similarity_matrix.device)  # 对角线是正确匹配
+        
+        # 计算Top-K匹配
+        _, topk_indices = similarity_matrix.topk(topk, dim=1)  # [B, K]
+        
+        # 统计各召回率
+        correct_r1 = (topk_indices[:, 0] == labels).float().sum().cpu().item()
+        correct_r3 = (topk_indices == labels.unsqueeze(1)).any(dim=1).float().sum().cpu().item()
+        correct_r5 = (topk_indices == labels.unsqueeze(1)).any(dim=1).float().sum().cpu().item()
+
+        # 可视化文本匹配结果（仅在Top-1不匹配时输出）
+        if batch_size <= 16:  # 只在小batch size时可视化
+            for i in range(batch_size):
+                # if topk_indices[i, 0] != labels[i]:  # 只在Top-1不匹配时输出
+                #     print("\n=== 文本匹配可视化（Top-1不匹配） ===")
+                print(f"\n样本 {i+1}:")
+                print(f"真值文本: {text[i]}")
+                print(f"Top-{topk} 匹配文本:")
+                for j in range(topk):
+                    matched_idx = topk_indices[i, j].item()
+                    similarity = similarity_matrix[i, matched_idx].item()
+                    print(f"  {j+1}. {text[matched_idx]} (相似度: {similarity:.4f})")
+
         
         if text_mask is not None:
             # text_feature, text_id = text
             # if text_mask is not None:
             input_ids = text_mask['input_ids'].to(motion.device)
-            labels_text = text_mask['labels'].to(motion.device).float()
+            labels = text_mask['labels'].to(motion.device).float()
             attention_mask = text_mask['attention_mask'].to(motion.device).bool()
             
             with torch.no_grad():
@@ -855,8 +913,10 @@ class Dualsem_encoderv3(nn.Module):
             # 特征投影
             text_feature = text_feature.to(motion.device).float()
             text_query = self.text_proj(text_feature)
-            
+            motion_feature_global = self.motion_text_proj(global_feat)
             motion_query = self.motion_all_proj(cls_token)
+            # if self.ifdown_sample:
+            #     motion_mask = motion_mask[:, ::4]
             # 跨模态注意力
             for layer in self.cross_attn_layers:
                 text_query = layer(
@@ -867,61 +927,22 @@ class Dualsem_encoderv3(nn.Module):
                     memory_key_padding_mask=~motion_mask,
                     tgt_key_padding_mask=~attention_mask,
                 )
-            
-            # # 文本特征提取
-            bert_tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-            # encoded = bert_tokenizer(
-            #     text,
-            #     padding='max_length',
-            #     truncation=True,
-            #     max_length=128,
-            #     return_tensors='pt'
-            # )
-            # for k, v in encoded.items():
-            #     encoded[k] = v.to(motion[0].device)
-            # bert_outputs = self.bert_model(**encoded)
-            # text_feature = bert_outputs.pooler_output.to(motion[0].device).float()
-            text_feature_pooler = self.text_motion_proj(text_feature_pooler)
-            
-            motion_feature_global = self.motion_text_proj(global_feat)
-            
-            # 计算相似度矩阵
-            motion_feature_global = F.normalize(motion_feature_global, p=2, dim=-1)  # [B, d]
-            text_feature_pooler = F.normalize(text_feature_pooler, p=2, dim=-1)       # [B, d]
-            similarity_matrix = torch.mm(motion_feature_global, text_feature_pooler.T)
-            
-            # 计算召回指标
-            batch_size = similarity_matrix.size(0)
-            labels = torch.arange(batch_size).to(similarity_matrix.device)  # 对角线是正确匹配
-            
-            # 计算Top-K匹配
-            _, topk_indices = similarity_matrix.topk(topk, dim=1)  # [B, K]
-            
-            # 统计各召回率
-            correct_r1 = (topk_indices[:, 0] == labels).float().sum().cpu().item()
-            correct_r3 = (topk_indices == labels.unsqueeze(1)).any(dim=1).float().sum().cpu().item()
-            correct_r5 = (topk_indices == labels.unsqueeze(1)).any(dim=1).float().sum().cpu().item()
-
-            # 可视化文本匹配结果（仅在Top-1不匹配时输出）
-            if batch_size <= 16:  # 只在小batch size时可视化
-                for i in range(batch_size):
-                    # if topk_indices[i, 0] != labels[i]:  # 只在Top-1不匹配时输出
-                    #     print("\n=== 文本匹配可视化（Top-1不匹配） ===")
-                    print(f"\n样本 {i+1}:")
-                    print(f"真值文本: {text[i]}")
-                    print(f"Top-{topk} 匹配文本:")
-                    for j in range(topk):
-                        matched_idx = topk_indices[i, j].item()
-                        similarity = similarity_matrix[i, matched_idx].item()
-                        print(f"  {j+1}. {text[matched_idx]} (相似度: {similarity:.4f})")
-            
+                
             # MLM预测
             logits = self.mlm_head(text_query)
-            # 计算MLM任务的Top-K召回率
-            active_loss = (labels_text != -100).view(-1)
-            active_logits = logits.view(-1, self.vocab_size)[active_loss]
-            active_labels = labels_text.view(-1)[active_loss]
             
+            # 标签平滑的MLM损失
+            loss_fct = LabelSmoothingCrossEntropy(smoothing=0.05)
+            active_loss = (labels != -100).view(-1)
+            active_logits = logits.view(-1, self.vocab_size)[active_loss]
+            active_labels = labels.view(-1)[active_loss]
+            mlm_loss = loss_fct(active_logits, active_labels.long())
+            # loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
+            # active_loss = (labels != -100).view(-1)
+            # active_logits = logits.view(-1, self.vocab_size)[active_loss]
+            # active_labels = labels.view(-1)[active_loss]
+            # mlm_loss = loss_fct(active_logits, active_labels.long())
+            # 对比损失
             topk_values, topk_indices = active_logits.topk(k=5, dim=-1)  # [active_num, 5]
             active_labels = active_labels.long()  # [active_num]
             expanded_labels = active_labels.unsqueeze(1).expand(-1, 5)  # [active_num, 5]
@@ -969,6 +990,9 @@ class Dualsem_encoderv3(nn.Module):
             
             return [correct_r1/batch_size, correct_r3/batch_size, correct_r5/batch_size], \
                    [r1_mlm.cpu().item(), r3_mlm.cpu().item(), r5_mlm.cpu().item()]
+                   
+        return [correct_r1/batch_size, correct_r3/batch_size, correct_r5/batch_size], [0, 0, 0]
+   
 
     def forward(self, motion, text_mask=None, motion_mask=None, text_id=None):
         # 部件特征预处理 bs,6,seq,d
@@ -982,30 +1006,19 @@ class Dualsem_encoderv3(nn.Module):
         time_feat = motion
         if motion_mask is not None:
             motion_mask = motion_mask.to(time_feat.device).bool()
-            if self.ifdown_sample == 2:                
-                time_feat = self.time_downsamplers(time_feat, padding_mask=~motion_mask)
-                motion_mask = motion_mask[:, ::4].clone()
-                time_feat = self.time_position[:, :time_feat.shape[1], :] + time_feat
-                time_feat = self.time_transformer(time_feat, src_key_padding_mask=~motion_mask)
-            else:
-                # 在每一层Transformer后应用时间降采样
-                time_feat = self.time_position[:, :time_feat.shape[1], :] + time_feat
-                for i, layer in enumerate(self.time_transformer.layers):
-                    time_feat = self.time_downsamplers[i](time_feat)
-                    if self.ifdown_sample:
-                        motion_mask = motion_mask[:, ::2].clone()  # 使用 clone() 创建副本
-                    time_feat = layer(time_feat, src_key_padding_mask=~motion_mask)
+            time_feat = self.time_position[:,:time_feat.shape[1],:]+time_feat
+            # 在每一层Transformer后应用时间降采样
+            for i, layer in enumerate(self.time_transformer.layers):
+                time_feat = self.time_downsamplers[i](time_feat)
+                if self.ifdown_sample:
+                    # motion_mask = motion_mask[:, ::2]  # 更新mask
+                    motion_mask = motion_mask[:, ::2].clone()  # 使用 clone() 创建副本
+                time_feat = layer(time_feat, src_key_padding_mask=~motion_mask)
         else:
-            if self.ifdown_sample == 2:
-                time_feat = self.time_downsamplers(time_feat)
-                time_feat = self.time_position[:, :time_feat.shape[1], :] + time_feat
-                time_feat = self.time_transformer(time_feat)
-            else:
-                # 在每一层Transformer后应用时间降采样
-                time_feat = self.time_position[:, :time_feat.shape[1], :] + time_feat
-                for i, layer in enumerate(self.time_transformer.layers):
-                    time_feat = self.time_downsamplers[i](time_feat)
-                    time_feat = layer(time_feat)
+            # 在每一层Transformer后应用时间降采样
+            for i, layer in enumerate(self.time_transformer.layers):
+                time_feat = self.time_downsamplers[i](time_feat)
+                time_feat = layer(time_feat)
             
         # 特征重组
         feature = time_feat

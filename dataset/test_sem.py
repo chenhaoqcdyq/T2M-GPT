@@ -17,7 +17,11 @@ from transformers import BertTokenizer, BertModel
 from transformers import CLIPModel, CLIPTokenizer
 import re
 from utils.misc import EasyDict
-from models import rvqvae_bodypart as vqvae
+from models import vqvae
+import utils.eval_trans as eval_trans
+from utils.motion_process import recover_from_ric
+import torch.nn as nn
+import torch.nn.functional as F
 
 
 class VQMotionDatasetBodyPart(data.Dataset):
@@ -48,7 +52,7 @@ class VQMotionDatasetBodyPart(data.Dataset):
             self.max_motion_length = 196
             self.meta_dir = 'checkpoints/kit/Decomp_SP001_SM001_H512/meta'
         # self.get_vqvae = get_vqvae
-        self.text_mask_dir =  pjoin(self.data_root, 'texts_mask_deepseek')
+        self.text_mask_dir =  pjoin(self.data_root, 'texts_mask_deepseek_processed')
         self.bert_feature_dir = pjoin(self.data_root, 'texts_bert_feature')
         if self.with_clip:
             os.makedirs(self.text_token_dir, exist_ok=True)
@@ -135,7 +139,7 @@ class VQMotionDatasetBodyPart(data.Dataset):
 
         print("Total number of motions {}".format(len(self.data)))
         # self.get_vqvae_code("output/00762-t2m-v24/VQVAE-v24-t2m-default/net_best_fid.pth","output/00762-t2m-v24/VQVAE-v24-t2m-default/train_config.json")
-        self.get_vqvae_code("output/00889-t2m-v24_dual3_downlayer1/VQVAE-v24_dual3_downlayer1-t2m-default/net_last.pth","output/00889-t2m-v24_dual3_downlayer1/VQVAE-v24_dual3_downlayer1-t2m-default/train_config.json", is_val=is_val)
+        #self.get_vqvae_code("/data/fengyuxiang/workspace/T2M-GPT/output/00009-t2m-VQVAE_lgvq/VQVAE-VQVAE_lgvq-t2m/net_last.pth","/data/fengyuxiang/workspace/T2M-GPT/output/00009-t2m-VQVAE_lgvq/VQVAE-VQVAE_lgvq-t2m/train_config.json", is_val=is_val)
         # self.get_vqvae_code("output/00417-t2m-v11/VQVAE-v11-t2m-default/net_best_fid.pth","output/00417-t2m-v11/VQVAE-v11-t2m-default/train_config.json")
         # self.get_vqvae_code("output/00417-t2m-v11/VQVAE-v11-t2m-default/net_best_fid.pth","output/00417-t2m-v11/VQVAE-v11-t2m-default/train_config.json", is_val=is_val)
         self.tokenizer_name = "bert-base-uncased"
@@ -157,6 +161,17 @@ class VQMotionDatasetBodyPart(data.Dataset):
             # text_feature_tmp.append()
             self.static_labels.append(tmp)
             self.bert_feature.append(self._get_text_features(self.raw_samples[i], self.bert_feature_dir))
+        # body_direction_labels = []
+        # for i in range(len(self.static_labels)):
+        #     for j in range(len(self.static_labels[i])):
+        #         for label in self.static_labels[i][j]:
+        #             if label['type'] == 'bodypart_direction':
+        #                 body_direction_labels.append(label)
+        # # Print out some info about the collected labels
+        # print(f"Found {len(body_direction_labels)} bodypart_direction labels")
+        # if len(body_direction_labels) > 0:
+        #     print("Sample bodypart_direction label:", body_direction_labels[0])
+            
         del self.bert_model
         
     
@@ -252,6 +267,24 @@ class VQMotionDatasetBodyPart(data.Dataset):
                                 'word': word,
                                 'position': pos
                             })
+      
+        # 处理新增的 direction_word 字段
+        if 'direction_word' in sample and sample['direction_word']:
+            for direction_item in sample['direction_word']:
+                # 解析方向词格式 "direction:bodypart"，例如 "right:his hands"
+                if ':' in direction_item:
+                    direction, phase = direction_item.split(':', 1)
+                    # 处理方向词
+                    direction_words = direction.split()
+                    for word in direction_words:
+                        for pos in find_all_positions(word, text):  
+                            if pos+1 < len(text) and phase == word+' '+text[pos+1]:
+                                    labels.append({
+                                        'type': 'bodypart_direction',
+                                        'word': word,
+                                        'position': pos
+                                    })
+
         return labels
 
     def _build_labels(self, encoded: Dict, mask_labels: List, masked_length: List) -> torch.Tensor:
@@ -322,37 +355,22 @@ class VQMotionDatasetBodyPart(data.Dataset):
     
     def get_vqvae_code(self, net_path, json_file, is_val=False):
         from utils.misc import EasyDict
-        from models import rvqvae_bodypart as vqvae
-        from models import vqvae_bodypart
         with open(json_file, 'r') as f:
             train_args_dict = json.load(f)  # dict
         args = EasyDict(train_args_dict) 
-        if 'vision' not in args:
-            net = vqvae_bodypart.HumanVQVAEBodyPart(args,  # use args to define different parameters in different quantizers
-                parts_code_nb=args.vqvae_arch_cfg['parts_code_nb'],
-                parts_code_dim=args.vqvae_arch_cfg['parts_code_dim'],
-                parts_output_dim=args.vqvae_arch_cfg['parts_output_dim'],
-                parts_hidden_dim=args.vqvae_arch_cfg['parts_hidden_dim'],
-                down_t=args.down_t,
-                stride_t=args.stride_t,
-                depth=args.depth,
-                dilation_growth_rate=args.dilation_growth_rate,
-                activation=args.vq_act,
-                norm=args.vq_norm
-            )
-        else:
-            net = getattr(vqvae, f'HumanVQVAETransformerV{args.vision}')(args,  # use args to define different parameters in different quantizers
-                parts_code_nb=args.vqvae_arch_cfg['parts_code_nb'],
-                parts_code_dim=args.vqvae_arch_cfg['parts_code_dim'],
-                parts_output_dim=args.vqvae_arch_cfg['parts_output_dim'],
-                parts_hidden_dim=args.vqvae_arch_cfg['parts_hidden_dim'],
-                down_t=args.down_t,
-                stride_t=args.stride_t,
-                depth=args.depth,
-                dilation_growth_rate=args.dilation_growth_rate,
-                activation=args.vq_act,
-                norm=args.vq_norm
-            )
+        net = vqvae.HumanVQVAE(args, ## use args to define different parameters in different quantizers
+                    args.nb_code,
+                    args.code_dim,
+                    args.output_emb_width,
+                    args.down_t,
+                    args.stride_t,
+                    args.width,
+                    args.depth,
+                    args.dilation_growth_rate,
+                    args.vq_act,
+                    args.vq_norm,
+                    enc='transformer',
+                    lgvq=args.lgvq)
         ckpt = torch.load(net_path, map_location='cpu')
         net.load_state_dict(ckpt['net'], strict=True)
         net.cuda()
@@ -391,77 +409,57 @@ class VQMotionDatasetBodyPart(data.Dataset):
                 if len(parts[i].shape) == 2:
                     parts[i] = parts[i].unsqueeze(0)
             motion_mask = torch.from_numpy(motion_mask).unsqueeze(0).cuda().bool()
-            code_idx = net.encode(parts, motion_mask)
+            
+            # 使用forward方法而不是encode
+            reconstructed_motion = self.parts2whole(parts)
+            
+            # 使用forward而不是encode，因为forward支持motion_mask参数
+            # forward返回的是(pred_motion, loss_commit, perplexity, loss_lgvq)
+            with torch.no_grad():
+                # 不需要text_mask和text_id，所以传入None
+                _, _, _, loss_lgvq = net(reconstructed_motion, motion_mask, None, None)
+                
+                # 直接使用net.vqvae.encode来获取编码
+                if args.lgvq == 1:
+                    code_idx, _ = net.vqvae.encode(reconstructed_motion)
+                else:
+                    code_idx = net.vqvae.encode(reconstructed_motion)
+            
             save_file = os.path.join(save_path, name)
             text = data['text']
-            # torch.save(code_idx, save_file)
-            # code_idx = [code_idx[i].cpu().numpy() for i in range(len(code_idx))]
-            for idx, name in enumerate(net.enhancedvqvae.parts_name):
-                setattr(self, f'{name}_code_idx', code_idx[idx].cpu().numpy())
+            
+            # 使用固定的部位名称，而不是依赖enhancedvqvae.parts_name
+            parts_name = ["Root", "R_Leg", "L_Leg", "Backbone", "R_Arm", "L_Arm"]
+            for idx, name in enumerate(parts_name):
+                setattr(self, f'{name}_code_idx', code_idx.cpu().numpy())
+            
             np.savez(
                 save_file,
-                **{name: getattr(self, f'{name}_code_idx') for name in net.enhancedvqvae.parts_name},
+                **{name: getattr(self, f'{name}_code_idx') for name in parts_name},
                 text=text
             )
-        # codebook_list = []
-        # codebook_save_path = os.path.join(self.data_root, 'codebook',f'{args.vision}.pth')
-        # for idx, name in enumerate(net.enhancedvqvae.parts_name):
-        #     quantizer = getattr(net.enhancedvqvae, f'quantizer_{name}')
-        #     codebook_list.append(quantizer.codebook)
-        # torch.save(codebook_list, codebook_save_path)
+        
         del net
-        # return save_path
     
     def __getitem__(self, item):
-        # motion = self.data[item]
         data = self.data[item]
-        if not self.IS_TARFILE:
-            for i in range(len(self.data)):
-                data_tmp = self.data[i]
-                # motion = data['motion']
-                text_id = data_tmp['text_id']
-                if text_id == "009133":
-                    data = data_tmp
-                    self.IS_TARFILE = True
-                    item = i
-                    break
         motion = data['motion']
-        text_id = data['text_id']
         text_list = data['text']
-        text_random_id = random.randint(0, len(text_list) - 1)
-        text = text_list[text_random_id]
-        if self.with_clip:
-            text_tokens = data['text_token'].cpu()
-            text_features = data['text_feature'].cpu()
-            text_feature_alls = data['text_feature_all'].cpu()
-            text_token = text_tokens[text_random_id]
-            text_feature = text_features[text_random_id]
-            text_feature_all = text_feature_alls[text_random_id]
-
-            if len(text_list) != text_tokens.shape[0]:
-                print('text_feature:', text_tokens)
-
-        # Preprocess. We should set the slice of motion at getitem stage, not in the initialization.
-        # If in the initialization, the augmentation of motion slice will be fixed, which will damage the diversity.
+        motion_mask = np.zeros((self.max_motion_length,))
+        if len(motion) < self.max_motion_length:
+            motion_mask[:len(motion)] = 1
+            motion = np.concatenate([motion, np.zeros((self.max_motion_length - len(motion), motion.shape[1]))], axis=0)
+        else:
+            motion = motion[:self.max_motion_length]
+            motion_mask[:self.max_motion_length] = 1
+        # idx = random.randint(0, len(motion) - self.window_size)
+        
+        # motion = motion[idx:idx+self.window_size]
         "Z Normalization"
         motion = (motion - self.mean) / self.std
-        orig_len = len(motion)
-        if orig_len < self.max_motion_length:
-            # 不足时padding零（根据motion维度调整pad_width）
-            pad_width = [(0, self.max_motion_length - orig_len)] + [(0,0)] * (motion.ndim-1)
-            motion = np.pad(motion, pad_width, mode='constant')
-            # 生成mask（1表示真实数据，0表示padding）
-            motion_mask = np.concatenate([np.ones(orig_len), np.zeros(self.max_motion_length - orig_len)])
-        else:
-            # 过长时直接截断
-            motion = motion[:self.max_motion_length]
-            motion_mask = np.ones(self.max_motion_length)
         
-
-        parts = self.whole2parts(motion, mode=self.dataset_name)
-
-        Root, R_Leg, L_Leg, Backbone, R_Arm, L_Arm = parts  # explicit written code for readability
-        
+        text_random_id = random.randint(0, len(text_list) - 1)
+        text = text_list[text_random_id]
         raw_sample_list = self.raw_samples[item]
         idx_sample = text_random_id
         if len(text_list) != len(raw_sample_list):
@@ -476,7 +474,7 @@ class VQMotionDatasetBodyPart(data.Dataset):
             stage = random.choice(self.masker.progressive_stages)
         else:
             stage = self.strategy
-        
+        # if self.args.lgvq>0:
         # 动态生成掩码
         masked_data = self.masker.generate_masks(text, static_labels, stage)
         
@@ -497,10 +495,91 @@ class VQMotionDatasetBodyPart(data.Dataset):
             'feature': text_bert_feature,
             'feature_all': text_bert_feature_all
         }
-        if self.with_clip:
-            return [Root, R_Leg, L_Leg, Backbone, R_Arm, L_Arm], text, text_token, text_feature, text_feature_all, text_id, text_mask, motion_mask
-        else:
-            return [Root, R_Leg, L_Leg, Backbone, R_Arm, L_Arm], text, text_id, text_id, text_id, text_id, text_mask, motion_mask
+
+        return motion, motion_mask, text_mask, text
+    
+    # def __getitem__(self, item):
+    #     # motion = self.data[item]
+    #     data = self.data[item]
+    #     if not self.IS_TARFILE:
+    #         for i in range(len(self.data)):
+    #             data_tmp = self.data[i]
+    #             # motion = data['motion']
+    #             text_id = data_tmp['text_id']
+    #             if text_id == "009133":
+    #                 data = data_tmp
+    #                 self.IS_TARFILE = True
+    #                 item = i
+    #                 break
+    #     motion = data['motion']
+    #     text_id = data['text_id']
+    #     text_list = data['text']
+    #     text_random_id = random.randint(0, len(text_list) - 1)
+    #     text = text_list[text_random_id]
+    #     if self.with_clip:
+    #         text_tokens = data['text_token'].cpu()
+    #         text_features = data['text_feature'].cpu()
+    #         text_feature_alls = data['text_feature_all'].cpu()
+    #         text_token = text_tokens[text_random_id]
+    #         text_feature = text_features[text_random_id]
+    #         text_feature_all = text_feature_alls[text_random_id]
+
+    #         if len(text_list) != text_tokens.shape[0]:
+    #             print('text_feature:', text_tokens)
+
+    #     # Preprocess. We should set the slice of motion at getitem stage, not in the initialization.
+    #     # If in the initialization, the augmentation of motion slice will be fixed, which will damage the diversity.
+    #     "Z Normalization"
+    #     motion = (motion - self.mean) / self.std
+    #     orig_len = len(motion)
+    #     if orig_len < self.max_motion_length:
+    #         # 不足时padding零（根据motion维度调整pad_width）
+    #         pad_width = [(0, self.max_motion_length - orig_len)] + [(0,0)] * (motion.ndim-1)
+    #         motion = np.pad(motion, pad_width, mode='constant')
+    #         # 生成mask（1表示真实数据，0表示padding）
+    #         motion_mask = np.concatenate([np.ones(orig_len), np.zeros(self.max_motion_length - orig_len)])
+    #     else:
+    #         # 过长时直接截断
+    #         motion = motion[:self.max_motion_length]
+    #         motion_mask = np.ones(self.max_motion_length)
+            
+    #     raw_sample_list = self.raw_samples[item]
+    #     idx_sample = text_random_id
+    #     if len(text_list) != len(raw_sample_list):
+    #         print('text_list:', text_list)
+    #     raw_sample = raw_sample_list[idx_sample]
+    #     text = raw_sample['original_text']
+    #     static_labels = self.static_labels[item][idx_sample]
+    #     text_bert_feature = self.bert_feature[item][0][idx_sample]
+    #     text_bert_feature_all = self.bert_feature[item][1][idx_sample]
+    #     # 选择掩码策略
+    #     if self.strategy == "progressive":
+    #         stage = random.choice(self.masker.progressive_stages)
+    #     else:
+    #         stage = self.strategy
+        
+    #     # 动态生成掩码
+    #     masked_data = self.masker.generate_masks(text, static_labels, stage)
+        
+    #     # 编码处理
+    #     encoded = self.bert_tokenizer(
+    #         masked_data['masked_text'],
+    #         padding='max_length',
+    #         truncation=True,
+    #         max_length=128,
+    #         return_tensors='pt'
+    #     )
+    #     # 构建动态标签
+    #     labels = self._build_labels(encoded, masked_data['labels'], masked_data['masked_length'])
+    #     text_mask = {
+    #         'input_ids': encoded['input_ids'].squeeze(),
+    #         'attention_mask': encoded['attention_mask'].squeeze(),
+    #         'labels': labels,
+    #         'feature': text_bert_feature,
+    #         'feature_all': text_bert_feature_all
+    #     }
+   
+    #     return motion, text, text_id, text_id, text_id, text_id, text_mask, motion_mask
 
 
 
@@ -508,12 +587,13 @@ class VQMotionDatasetBodyPart(data.Dataset):
 class DynamicMaskGenerator:
     def __init__(self, 
                  bert_tokenizer,
-                 progressive_stages: List[str] = ['basic', 'medium', 'advanced']):
+                 progressive_stages: List[str] = ['basic', 'medium', 'advanced', 'bodypart_direction']):
         self.strategies = {
             'basic': partial(self._mask_core_dir, core_prob=0.5, dir_prob=0.3),
             'medium': partial(self._mask_core_body_dir, core_prob=0.6, dir_prob=0.4, body_prob=0.2),
             'advanced': self._full_mask,
-            'random': self._random_mask
+            'random': self._random_mask,
+            'bodypart_direction': self._mask_bodypart_direction
         }
         self.bert_tokenizer = bert_tokenizer
         self.mask_token = "[MASK]"
@@ -557,12 +637,29 @@ class DynamicMaskGenerator:
                     print('masked:', masked)
                 new_labels.append(word_info)
         return masked, new_labels
+    
+    def _mask_bodypart_direction(self, words, labels, prob=0.8):
+        """身体部位方向掩码"""
+        # masked = words.copy()
+        masked = torch.zeros(len(words), dtype=torch.int64)
+        new_labels = []
+        for word_info in labels:
+            if word_info['type'] == 'bodypart_direction' and random.random() < prob:
+                pos = word_info['position']
+                try:
+                    masked[pos] = len(self.bert_tokenizer.tokenize(word_info['word']))
+                except:
+                    print('pos:', pos)
+                    print('len(masked):', len(masked))
+                    print('masked:', masked)
+                new_labels.append(word_info)
+        return masked, new_labels
 
     def _mask_core_dir(self, words, labels, core_prob=0.5, dir_prob=0.3):
         """核心+方向联合掩码"""
         masked, new_labels = self._mask_core(words, labels, core_prob)
         for word_info in labels:
-            if word_info['type'] == 'dir' and random.random() < dir_prob:
+            if (word_info['type'] == 'dir' or word_info['type'] == 'bodypart_direction') and random.random() < dir_prob:
                 pos = word_info['position']
                 try:
                     # masked[pos] = self.mask_token
@@ -918,6 +1015,7 @@ def parts2whole(parts, mode='t2m', shared_joint_rec_mode='Avg'):
         else:
             raise Exception()
 
+
         # Concate them to 251-dims repre
         if bs is None:
             rec_ric_data = rec_ric_data.reshape(nframes, -1)
@@ -1062,62 +1160,224 @@ def cycle(iterable):
             yield x
 
 
-
-if __name__ == "__main__":
-    path = "output/00889-t2m-v24_dual3_downlayer1/VQVAE-v24_dual3_downlayer1-t2m-default"
-    json_file = os.path.join(path, 'train_config.json')
-    checkpoint_path = os.path.join(path, 'net_last.pth')
-    # checkpoint_path = os.path.join(path, 'net_best_fid.pth')
-    with open(json_file, 'r') as f:
-        train_args_dict = json.load(f)  # dict
-    args = EasyDict(train_args_dict) 
-    net = getattr(vqvae, f'HumanVQVAETransformerV{args.vision}')(args,  # use args to define different parameters in different quantizers
-                parts_code_nb=args.vqvae_arch_cfg['parts_code_nb'],
-                parts_code_dim=args.vqvae_arch_cfg['parts_code_dim'],
-                parts_output_dim=args.vqvae_arch_cfg['parts_output_dim'],
-                parts_hidden_dim=args.vqvae_arch_cfg['parts_hidden_dim'],
-                down_t=args.down_t,
-                stride_t=args.stride_t,
-                depth=args.depth,
-                dilation_growth_rate=args.dilation_growth_rate,
-                activation=args.vq_act,
-                norm=args.vq_norm
-            )
-    ckpt = torch.load(checkpoint_path, map_location='cpu')
-    net.load_state_dict(ckpt['net'], strict=True)
-    net.cuda()
-    net.eval()
-    train_loader = DATALoader(args.dataname,
-                            16,
-                            window_size=args.window_size,
-                            num_workers=10,
-                            unit_length=1,
-                            is_val=True)
-    train_loader_iter = cycle(train_loader)
-    R1, R2 = [], []
-    for i in tqdm(range(1)):
-        batch = next(train_loader_iter)
-        if len(batch) == 3:
-            gt_parts, text, text_id = batch
-        elif len(batch) == 6:   
-            gt_parts, text, text_token, text_feature, text_feature_all, text_id = batch
-        elif len(batch) == 7:
-            gt_parts, text, text_token, text_feature, text_feature_all, text_id, text_mask = batch
-        elif len(batch) == 8:
-            gt_parts, text, text_token, text_feature, text_feature_all, text_id, text_mask, motion_mask = batch
-        gt_parts = [part.cuda() for part in gt_parts]
-        # print(text)
+def create_fixed_test_set(dataset_name, batch_size, num_samples=100, window_size=64, unit_length=1, seed=42):
+    """
+    Create a fixed test set to consistently evaluate different models.
+    
+    Args:
+        dataset_name: 't2m' or 'kit'
+        batch_size: Batch size for testing
+        num_samples: Number of fixed samples to include
+        window_size: Motion window size
+        unit_length: Unit length for the dataset
+        seed: Random seed for reproducibility
         
-        with torch.no_grad():
-            # for i in range(len(gt_parts[0])):
-            result = net.text_motion_topk(gt_parts, text, motion_mask=motion_mask, topk=5, text_mask=text_mask)
-        global_R, pred_R = result
-        R1.append(global_R)
-        R2.append(pred_R)
-        print(result)
+    Returns:
+        A DataLoader with fixed samples
+    """
+    # Set random seed for reproducibility
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    
+    # Create the full validation dataset
+    full_dataset = VQMotionDatasetBodyPart(dataset_name, window_size=window_size, 
+                                         unit_length=unit_length, is_val=True, strategy='bodypart_direction')
+    
+    # Select a fixed subset of samples for consistent testing
+    dataset_size = len(full_dataset)
+    fixed_indices = np.random.choice(dataset_size, min(num_samples, dataset_size), replace=False)
+    
+    # Create a Subset dataset
+    fixed_dataset = torch.utils.data.Subset(full_dataset, fixed_indices)
+    
+    # Create a DataLoader
+    fixed_loader = torch.utils.data.DataLoader(fixed_dataset,
+                                              batch_size=batch_size,
+                                              shuffle=False,  # No shuffling to keep the order consistent
+                                              num_workers=8,
+                                              drop_last=False)  # Keep all samples
+    
+    # Save the fixed indices for future reference
+    indices_path = f"./dataset/fixed_test_indices_{dataset_name}_{num_samples}.npy"
+    os.makedirs(os.path.dirname(indices_path), exist_ok=True)
+    np.save(indices_path, fixed_indices)
+    print(f"Saved fixed test indices to {indices_path}")
+    
+    return fixed_loader
+
+
+def load_fixed_test_set(dataset_name, batch_size, indices_path=None, num_samples=100, window_size=64, unit_length=1):
+    """
+    Load a previously created fixed test set or create a new one if it doesn't exist.
+    
+    Args:
+        dataset_name: 't2m' or 'kit'
+        batch_size: Batch size for testing
+        indices_path: Path to saved indices, if None will look for default path
+        num_samples: Number of fixed samples if creating new test set
+        window_size: Motion window size
+        unit_length: Unit length for the dataset
+        
+    Returns:
+        A DataLoader with fixed samples
+    """
+    if indices_path is None:
+        indices_path = f"./dataset/fixed_test_indices_{dataset_name}_{num_samples}.npy"
+    
+    # Create the full validation dataset
+    full_dataset = VQMotionDatasetBodyPart(dataset_name, window_size=window_size, 
+                                         unit_length=unit_length, is_val=True, strategy='bodypart_direction')
+    
+    # Check if fixed indices exist
+    if os.path.exists(indices_path):
+        fixed_indices = np.load(indices_path)
+        print(f"Loaded fixed test indices from {indices_path}")
+    else:
+        # Create new fixed test set if indices don't exist
+        return create_fixed_test_set(dataset_name, batch_size, num_samples, window_size, unit_length)
+    
+    # Create a Subset dataset
+    fixed_dataset = torch.utils.data.Subset(full_dataset, fixed_indices)
+    
+    # Create a DataLoader
+    fixed_loader = torch.utils.data.DataLoader(fixed_dataset,
+                                              batch_size=batch_size,
+                                              shuffle=False,  # No shuffling to keep the order consistent
+                                              num_workers=8,
+                                              drop_last=False)  # Keep all samples
+    
+    return fixed_loader
+
+
+def evaluate_model(net, test_loader, topk=5):
+    """
+    Evaluate a model on a fixed test set.
+    
+    Args:
+        net: Model to evaluate
+        test_loader: DataLoader with fixed test samples
+        topk: Number of top results to consider
+        
+    Returns:
+        Dictionary with evaluation metrics
+    """
+    net.eval()
+    R1, R2 = [], []
+    
+    with torch.no_grad():
+        for batch in tqdm(test_loader):
+            if len(batch) == 3:
+                gt_parts, text, text_id = batch
+            elif len(batch) == 4:   
+                motion, motion_mask, text_mask, text = batch
+            elif len(batch) == 7:
+                gt_parts, text, text_token, text_feature, text_feature_all, text_id, text_mask = batch
+            elif len(batch) == 8:
+                gt_parts, text, text_token, text_feature, text_feature_all, text_id, text_mask, motion_mask = batch
+                
+            motion = motion.cuda().float()
+            if motion_mask is not None:
+                motion_mask = motion_mask.cuda().long()
+            
+            result = net.vqvae.text_motion_topk(motion, text, motion_mask=motion_mask, topk=topk, text_mask=text_mask)
+            global_R, pred_R = result
+            R1.append(global_R)
+            R2.append(pred_R)
+    
     R1_mean = np.mean(np.array(R1), axis=0)
     R2_mean = np.mean(np.array(R2), axis=0)
-    print("R1 均值:", R1_mean)
-    print("R2 均值:", R2_mean)
+    
+    metrics = {
+        'R1': R1_mean,
+        'R2': R2_mean,
+    }
+    
+    return metrics
 
+
+if __name__ == "__main__":
+    # Base model path
+    base_path = "/data/fengyuxiang/workspace/T2M-GPT/output"
+    model_paths = [
+        "00017-t2m-VQVAE_lgvq/VQVAE-VQVAE_lgvq-t2m",
+        "00018-t2m-VQVAE_lgvq/VQVAE-VQVAE_lgvq-t2m",
+    ]
+    
+    # You can specify the model to evaluate, or evaluate all models
+    model_idx = None  # Set to None to evaluate all models
+    
+    # Create or load a fixed test set
+    test_loader = load_fixed_test_set(
+        dataset_name='t2m',
+        batch_size=32,
+        num_samples=400,  # Number of test samples
+        window_size=64,
+        unit_length=1
+    )
+    
+    # Track results for all models
+    all_results = {}
+    
+    # Process specified model or all models
+    models_to_process = [model_paths[model_idx]] if model_idx is not None else model_paths
+    
+    for model_path in models_to_process:
+        full_path = os.path.join(base_path, model_path)
+        print(f"\nEvaluating model: {model_path}")
+        
+        # Load model configuration
+        json_file = os.path.join(full_path, 'train_config.json')
+        with open(json_file, 'r') as f:
+            train_args_dict = json.load(f)
+        args = EasyDict(train_args_dict)
+        
+        # Try best_fid checkpoint first, fall back to last if not available
+        checkpoint_path = os.path.join(full_path, 'net_best_fid.pth')
+        if not os.path.exists(checkpoint_path):
+            checkpoint_path = os.path.join(full_path, 'net_last.pth')
+            print(f"Using last checkpoint instead of best_fid")
+        
+        # Initialize and load the model
+        net = vqvae.HumanVQVAE(args,
+                            args.nb_code,
+                            args.code_dim,
+                            args.output_emb_width,
+                            args.down_t,
+                            args.stride_t,
+                            args.width,
+                            args.depth,
+                            args.dilation_growth_rate,
+                            args.vq_act,
+                            args.vq_norm,
+                            enc='transformer',
+                            lgvq=args.lgvq if hasattr(args, 'lgvq') else 0)
+        
+        ckpt = torch.load(checkpoint_path, map_location='cpu')
+        net.load_state_dict(ckpt['net'], strict=True)
+        net.cuda()
+        net.eval()
+        
+        # Evaluate the model
+        metrics = evaluate_model(net, test_loader, topk=5)
+        all_results[model_path] = metrics
+                
+        # Save results for future reference
+        result_file = os.path.join(full_path, 'fixed_test_results.npy')
+        np.save(result_file, {k: v for k, v in metrics.items() if k in ['R1', 'R2']})
+        print(f"Saved test results to {result_file}")
+        
+        # Clean up to save memory
+        del net
+        torch.cuda.empty_cache()
+    
+    # Compare results for all models if multiple were evaluated
+    if len(models_to_process) >= 1:
+        print("\nComparison of models:")
+        for model_path in models_to_process:
+            metrics = all_results[model_path]
+            print(f"\nModel: {model_path}")
+            
+            print(f"    R1_mean: {metrics['R1']}")
+            print(f"    R2_mean: {metrics['R2']}")
         

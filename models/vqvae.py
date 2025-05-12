@@ -43,7 +43,7 @@ class VQVAE_251(nn.Module):
             if 'down_vqvae' in args and args.down_vqvae == 1:
                 self.decoder = Decoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=dec_causal)
             else:
-                self.decoder = Decoder_wo_upsample(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=dec_causal)
+                self.decoder = Decoder_wo_upsample(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm)
         if args.quantizer == "ema_reset":
             self.quantizer = QuantizeEMAReset(nb_code, code_dim, args)
         elif args.quantizer == "orig":
@@ -81,6 +81,15 @@ class VQVAE_251(nn.Module):
             return code_idx, sem_idx
         else:
             return code_idx
+
+    def text_motion_topk(self, motion, text, motion_mask=None, topk=5, text_mask=None):
+        x_in = self.preprocess(motion)
+        # Encode
+        x_encoder = self.encoder(x_in, motion_mask)
+        motion = x_encoder.permute(0,2,1)
+        # breakpoint()
+        # motion_mask = motion_mask[:, ::4].clone()
+        return self.lgvq_encoder.text_motion_topk(motion, text, motion_mask=motion_mask, topk=topk, text_mask=text_mask)
 
 
     def forward(self, x, motion_mask = None, text_mask = None, text_id = None):
@@ -125,13 +134,13 @@ class VQVAE_251(nn.Module):
         x_out = self.postprocess(x_decoder)
         return x_out
     
-    def text_motion_topk(self, motion, text, text_mask=None, motion_mask=None, topk=5):
-        x_in = self.preprocess(motion)
-        x_encoder = self.encoder(x_in, motion_mask)
-        if self.lgvq == 1:
-            return self.lgvq_encoder.text_motion_topk(self.preprocess(x_encoder), text, text_mask, motion_mask, topk)
-        else:
-            return [], []
+    # def text_motion_topk(self, motion, text, text_mask=None, motion_mask=None, topk=5):
+    #     x_in = self.preprocess(motion)
+    #     x_encoder = self.encoder(x_in, motion_mask)
+    #     if self.lgvq == 1:
+    #         return self.lgvq_encoder.text_motion_topk(self.preprocess(x_encoder), text, text_mask, motion_mask, topk)
+    #     else:
+    #         return [], []
 
 
 

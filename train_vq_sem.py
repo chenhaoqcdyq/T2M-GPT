@@ -117,7 +117,7 @@ if args.freeze_encdec != 0 and args.lgvq != 0:
 
 if args.all_motion:
     if args.lgvq >= 1:
-        import dataset.dataset_VQ_all_text as dataset_VQ
+        import dataset.dataset_VQ_all_text_dic as dataset_VQ
     else:
         import dataset.dataset_VQ_all as dataset_VQ
 else:
@@ -138,8 +138,7 @@ if args.lgvq >= 1:
     val_text_loader = dataset_VQ.DATALoader(args.dataname,
                                         32,
                                         window_size=args.window_size,
-                                        unit_length=2**args.down_t,
-                                        val=True)
+                                        unit_length=2**args.down_t)
     # val_text_loader_iter = dataset_VQ.cycle(val_text_loader)
 print("args = ",args)
 
