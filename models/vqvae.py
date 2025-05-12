@@ -90,7 +90,10 @@ class VQVAE_251(nn.Module):
         x_encoder = self.encoder(x_in, motion_mask)
         if self.lgvq == 1:
             if self.args.down_vqvae == 1 and motion_mask is not None:
-                motion_mask = motion_mask[:, ::4].clone()
+                if self.args.down_t == 2:
+                    motion_mask = motion_mask[:, ::4].clone()
+                else:
+                    motion_mask = motion_mask[:, ::2].clone()
             cls_token, loss_lgvq, sem_quantized = self.lgvq_encoder(x_encoder.permute(0,2,1), text_mask=text_mask, motion_mask=motion_mask, text_id=text_id)
             contrastive_loss, mlm_loss = loss_lgvq
             loss_sem, perplexity_sem = sem_quantized
@@ -100,7 +103,10 @@ class VQVAE_251(nn.Module):
         x_quantized, loss, perplexity  = self.quantizer(x_encoder)
         if self.lgvq == 2:
             if self.args.down_vqvae == 1 and motion_mask is not None:
-                motion_mask = motion_mask[:, ::4].clone()
+                if self.args.down_t == 2:
+                    motion_mask = motion_mask[:, ::4].clone()
+                else:
+                    motion_mask = motion_mask[:, ::2].clone()
             cls_token, loss_lgvq, sem_quantized = self.lgvq_encoder(x_quantized.permute(0,2,1), text_mask=text_mask, motion_mask=motion_mask, text_id=text_id, layer_norm=self.args.layer_norm)
             contrastive_loss, mlm_loss = loss_lgvq
             loss_sem, perplexity_sem = sem_quantized

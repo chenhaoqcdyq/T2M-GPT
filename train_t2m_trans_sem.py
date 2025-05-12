@@ -176,9 +176,9 @@ if args_vq.lgvq == 1:
 else:
     from dataset import dataset_TM_train
 if "down_vqvae" in args_vq:
-    if args_vq.down_vqvae:
+    if args_vq.down_vqvae and args_vq.down_t == 2:
         unit_length = 4
-    elif args_vq.down_t == 1:
+    elif args_vq.down_vqvae and args_vq.down_t == 1:
         unit_length = 2
     else:
         unit_length = 1
