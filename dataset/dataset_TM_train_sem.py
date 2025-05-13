@@ -1,3 +1,4 @@
+import os
 import torch
 from torch.utils import data
 import numpy as np
@@ -67,8 +68,13 @@ class Text2MotionDataset(data.Dataset):
         data_dict = {}
         for name in tqdm(id_list):
             try:
-                m_token_list = np.load(pjoin(self.data_root, tokenizer_name, '%s.npy'%name))
-                sem_token_list = np.load(pjoin(self.data_root, tokenizer_name, '%s_sem.npy'%name))
+                if os.path.exists(pjoin(self.data_root, tokenizer_name, '%s.npz'%name)):
+                    data = np.load(pjoin(self.data_root, tokenizer_name, '%s.npz'%name))
+                    m_token_list = data['motion']
+                    sem_token_list = data['sem']
+                else:
+                    m_token_list = np.load(pjoin(self.data_root, tokenizer_name, '%s.npy'%name))
+                    sem_token_list = np.load(pjoin(self.data_root, tokenizer_name, '%s_sem.npy'%name))
                 # Read text
                 with cs.open(pjoin(self.text_dir, name + '.txt')) as f:
                     text_data = []

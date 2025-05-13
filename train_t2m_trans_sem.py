@@ -105,6 +105,10 @@ if args_vq.lgvq == 1:
     num_vq_trans = args.nb_code * 2 + 1
 else:
     num_vq_trans = args.nb_code
+if args_vq.lgvq == 1 and args.sample_way == 0:
+    semantic_flag = True
+else:
+    semantic_flag = False
 trans_encoder = trans.Text2Motion_Transformer(num_vq=num_vq_trans, 
                                 embed_dim=args.embed_dim_gpt, 
                                 clip_dim=args.clip_dim, 
@@ -112,7 +116,8 @@ trans_encoder = trans.Text2Motion_Transformer(num_vq=num_vq_trans,
                                 num_layers=args.num_layers, 
                                 n_head=args.n_head_gpt, 
                                 drop_out_rate=args.drop_out_rate, 
-                                fc_rate=args.ff_rate)
+                                fc_rate=args.ff_rate,
+                                semantic_flag=semantic_flag)
 
 
 if args.resume_trans is not None:
@@ -166,10 +171,11 @@ for batch in tqdm(train_loader_token):
             m_tokens_result = np.concatenate([m_tokens_sem[:max_motion_length-1], np.ones((1), dtype=int) * mot_end_idx], axis=0)
         np.savez(pjoin("/workspace/motion_diffusion/T2M-GPT/dataset/HumanML3D/T2M_with_end_val", name[0] +'.npz'), motion=m_tokens_result, text=text)
     else:
-        np.save(pjoin(args.vq_dir, name[0] +'.npy'), motion_idx)
         if sem_idx is not None:
             sem_idx = sem_idx.cpu().numpy() # (1, x)
-            np.save(pjoin(args.vq_dir, name[0] +'_sem.npy'), sem_idx)
+            np.savez(pjoin(args.vq_dir, name[0] +'.npz'), motion=motion_idx, sem=sem_idx, text=text)
+        else:
+            np.savez(pjoin(args.vq_dir, name[0] +'.npz'), motion=motion_idx, text=text)
 
 if args_vq.lgvq == 1:
     from dataset import dataset_TM_train_sem as dataset_TM_train

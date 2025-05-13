@@ -205,8 +205,8 @@ for nb_iter in range(1, args.warm_up_iter):
 ##### ---- Training ---- #####
 avg_recons, avg_perplexity, avg_commit, avg_contrastive, avg_mlm = 0., 0., 0., 0., 0.
 best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger, best_mpjpe = eval_trans.evaluation_vqvae(args.run_dir, val_loader, net, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, eval_wrapper=eval_wrapper, draw=False, best_mpjpe=100)
-if args.lgvq >= 1:
-    R1, R2 = eval_trans.evaluation_vqvae_text(val_text_loader, net)
+# if args.lgvq >= 1:
+#     R1, R2 = eval_trans.evaluation_vqvae_text(val_text_loader, net)
 if args.freeze_encdec != 0 and args.lgvq != 0:
     net = freeze_encdec(net)
 for nb_iter in range(1, args.total_iter + 1):

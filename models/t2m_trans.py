@@ -15,12 +15,36 @@ class Text2Motion_Transformer(nn.Module):
                 num_layers=2, 
                 n_head=8, 
                 drop_out_rate=0.1, 
-                fc_rate=4):
+                fc_rate=4,
+                semantic_flag=False):
         super().__init__()
         self.trans_base = CrossCondTransBase(num_vq, embed_dim, clip_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate)
         self.trans_head = CrossCondTransHead(num_vq, embed_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate)
         self.block_size = block_size
         self.num_vq = num_vq
+        # self.reconstruction_flag = 0
+        self.semantic_flag = semantic_flag
+        # Define token ID constants
+        # Assuming self.num_vq is the STOP_TOKEN_ID for the combined (semantic+separator+reconstruction) vocabulary.
+        # Example: self.num_vq = 1025 means tokens 0-1024 are valid, 1025 is STOP.
+        # If semantic and reconstruction codebooks are each 512:
+        # Semantic tokens: 0-511
+        # Separator token: 512
+        # Reconstruction tokens: 513-1024
+        # This implies _assumed_codebook_part_size = 512.
+        # We derive _assumed_codebook_part_size from self.num_vq to be robust.
+        # (self.num_vq - 1 (separator) - 1 (stop_token_id_is_size_not_index)) / 2
+        # If self.num_vq = 1025 (stop token ID), then max active token index is 1024.
+        # Number of active tokens = self.num_vq.
+        # If vocabulary is [sem (N), sep (1), recon (N)], total active tokens = 2N+1. Stop token is 2N+1.
+        # So, self.num_vq = 2N+1. N = (self.num_vq - 1) / 2.
+        _assumed_codebook_part_size = (self.num_vq - 1) // 2 # e.g. (1025-1)//2 = 512
+
+        self.SEMANTIC_TOKEN_END_IDX = _assumed_codebook_part_size - 1
+        self.SEPARATOR_TOKEN_IDX = _assumed_codebook_part_size
+        self.RECONSTRUCTION_TOKEN_START_IDX = _assumed_codebook_part_size + 1
+        # RECONSTRUCTION_TOKEN_END_IDX is self.num_vq - 1 (the max token ID before stop)
+        # STOP_TOKEN_ID is self.num_vq
 
     def get_block_size(self):
         return self.block_size
@@ -30,34 +54,146 @@ class Text2Motion_Transformer(nn.Module):
         logits = self.trans_head(feat)
         return logits
 
-    def sample(self, clip_feature, if_categorial=False):
-        for k in range(self.block_size):
-            if k == 0:
-                x = []
-            else:
-                x = xs
-            logits = self.forward(x, clip_feature)
-            logits = logits[:, -1, :]
+    def sample_original_backup(self, clip_feature, if_categorial=False):
+        """
+        Original sampling logic, used when semantic_flag=False.
+        Samples from the full vocabulary space. self.num_vq is the stop token.
+        """
+        xs = None
+        for k_loop_idx in range(self.block_size):
+            current_input_for_transformer = xs if xs is not None else [] 
+            
+            logits = self.forward(current_input_for_transformer, clip_feature)
+            logits = logits[:, -1, :] 
             probs = F.softmax(logits, dim=-1)
+
+            idx_sampled_token = None
             if if_categorial:
                 dist = Categorical(probs)
-                idx = dist.sample()
-                if idx == self.num_vq:
-                    break
-                idx = idx.unsqueeze(-1)
+                idx_val = dist.sample() 
+                if idx_val == self.num_vq: 
+                    break 
+                idx_sampled_token = idx_val.unsqueeze(-1) 
             else:
-                _, idx = torch.topk(probs, k=1, dim=-1)
-                if idx[0] == self.num_vq:
-                    break
-            # append to the sequence and continue
-            if k == 0:
-                xs = idx
-            else:
-                xs = torch.cat((xs, idx), dim=1)
+                _, idx_val_topk = torch.topk(probs, k=1, dim=-1) 
+                if idx_val_topk[0,0] == self.num_vq: 
+                    break 
+                idx_sampled_token = idx_val_topk
             
-            if k == self.block_size - 1:
-                return xs[:, :-1]
+            if xs is None:
+                xs = idx_sampled_token
+            else:
+                xs = torch.cat((xs, idx_sampled_token), dim=1)
+            
+        if xs is None: 
+            return torch.empty((clip_feature.shape[0], 0), dtype=torch.long, device=clip_feature.device)
         return xs
+
+    def sample(self, clip_feature, if_categorial=False):
+        if not self.semantic_flag:
+            # Use the original sampling logic
+            return self.sample_original_backup(clip_feature, if_categorial)
+        else:
+            # Semantic-aware sampling logic
+            xs = None
+            # semantic_flag is True, start with semantic phase
+            current_sampling_phase = "semantic" 
+            sampled_at_least_one_reconstruction_token = False
+            
+            # Loop to generate up to block_size - 1 tokens
+            # (condition clip_feature takes one spot in the transformer's view, 
+            # effectively allowing block_size-1 generated tokens to form a sequence of self.block_size with condition)
+            for k_loop_iter in range(self.block_size -1): 
+                current_input_for_transformer = xs if xs is not None else []
+                
+                logits = self.forward(current_input_for_transformer, clip_feature)
+                logits = logits[:, -1, :] 
+                probs = F.softmax(logits, dim=-1)
+
+                # Mask probabilities based on the current sampling phase
+                # self.num_vq is the ID of the stop token. Max actual data token ID is self.num_vq - 1.
+                temp_probs = probs.clone()
+
+                if current_sampling_phase == "semantic":
+                    # Allow [0, SEMANTIC_TOKEN_END_IDX] or SEPARATOR_TOKEN_IDX
+                    # Block [RECONSTRUCTION_TOKEN_START_IDX, self.num_vq-1 (max_token_id)]
+                    temp_probs[:, self.RECONSTRUCTION_TOKEN_START_IDX : self.num_vq] = 0 
+                    # Also block explicit stop if in semantic phase before separator
+                    temp_probs[:, self.num_vq] = 0 
+                     # If all semantic token probabilities are extremely low, force SEPARATOR_TOKEN_IDX
+                    if torch.sum(temp_probs[:, :self.SEPARATOR_TOKEN_IDX]) < 1e-9 :
+                        temp_probs[:, :self.SEPARATOR_TOKEN_IDX+1] = 0 # Zero out semantic and separator initially
+                        temp_probs[:, self.SEPARATOR_TOKEN_IDX] = 1.0 # Force separator
+
+                elif current_sampling_phase == "reconstruction":
+                    # Allow [RECONSTRUCTION_TOKEN_START_IDX, self.num_vq-1] or STOP_TOKEN (self.num_vq)
+                    # Block all semantic tokens and the separator token
+                    temp_probs[:, :self.RECONSTRUCTION_TOKEN_START_IDX] = 0
+                
+                # Renormalize probabilities
+                batch_sums = temp_probs.sum(dim=-1, keepdim=True)
+                # Handle cases where all valid probabilities become zero after masking
+                for i_batch in range(temp_probs.shape[0]):
+                    if batch_sums[i_batch] < 1e-9: # If sum is too small
+                        if current_sampling_phase == "semantic":
+                            # Fallback: force SEPARATOR_TOKEN_IDX
+                            temp_probs[i_batch, :] = 0
+                            temp_probs[i_batch, self.SEPARATOR_TOKEN_IDX] = 1.0
+                        else: # reconstruction phase
+                            # Fallback: force STOP_TOKEN_ID
+                            temp_probs[i_batch, :] = 0
+                            temp_probs[i_batch, self.num_vq] = 1.0 
+                # Re-calculate sums after potential fallback
+                batch_sums = temp_probs.sum(dim=-1, keepdim=True)
+                # Avoid division by zero if somehow still all zeros (should be caught by fallback)
+                probs_masked = temp_probs / (batch_sums + 1e-9)
+
+
+                # Sample token from masked probabilities
+                idx_sampled_token_val = None
+                if if_categorial:
+                    dist = Categorical(probs_masked)
+                    idx_val = dist.sample()
+                    if idx_val == self.num_vq: # Stop token
+                        break
+                    idx_sampled_token_val = idx_val.unsqueeze(-1)
+                else:
+                    _, idx_val_topk = torch.topk(probs_masked, k=1, dim=-1)
+                    if idx_val_topk[0,0] == self.num_vq: # Stop token
+                        break
+                    idx_sampled_token_val = idx_val_topk
+
+                # Append to sequence
+                if xs is None:
+                    xs = idx_sampled_token_val
+                else:
+                    xs = torch.cat((xs, idx_sampled_token_val), dim=1)
+
+                # Update phase and flags
+                sampled_token_id = idx_sampled_token_val[0,0].item()
+                if current_sampling_phase == "semantic" and sampled_token_id == self.SEPARATOR_TOKEN_IDX:
+                    current_sampling_phase = "reconstruction"
+                elif current_sampling_phase == "reconstruction":
+                    if self.RECONSTRUCTION_TOKEN_START_IDX <= sampled_token_id < self.num_vq:
+                        sampled_at_least_one_reconstruction_token = True
+            
+            # After loop, ensure reconstruction token if needed
+            if current_sampling_phase == "reconstruction" and not sampled_at_least_one_reconstruction_token:
+                # If sequence is empty or only separator, add a reconstruction token
+                if xs is None or xs.shape[1] == 0 :
+                    xs = torch.tensor([[self.RECONSTRUCTION_TOKEN_START_IDX]], dtype=torch.long, device=clip_feature.device)
+                elif xs[0,-1].item() == self.SEPARATOR_TOKEN_IDX: # Ends with separator
+                    # Append a reconstruction token if space allows (block_size-1 max generated tokens)
+                    if xs.shape[1] < (self.block_size -1):
+                        xs = torch.cat((xs, torch.tensor([[self.RECONSTRUCTION_TOKEN_START_IDX]], dtype=torch.long, device=clip_feature.device)), dim=1)
+                    else: # No space, replace separator
+                        xs[0,-1] = self.RECONSTRUCTION_TOKEN_START_IDX
+                elif xs[0,-1].item() != self.num_vq : # Last token is not STOP and not SEPARATOR
+                    xs[0,-1] = self.RECONSTRUCTION_TOKEN_START_IDX # Replace last token
+
+            if xs is None:
+                return torch.empty((clip_feature.shape[0], 0), dtype=torch.long, device=clip_feature.device)
+            return xs
 
 class CausalCrossConditionalSelfAttention(nn.Module):
 
