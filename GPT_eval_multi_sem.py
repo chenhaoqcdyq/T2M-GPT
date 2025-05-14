@@ -91,6 +91,10 @@ if args_vq.lgvq:
     num_vq_trans = args_vq.nb_code * 2 + 1
 else:
     num_vq_trans = args_vq.nb_code
+if args_vq.lgvq == 1 and args.sample_way == 0:
+    semantic_flag = True
+else:
+    semantic_flag = False
 trans_encoder = trans.Text2Motion_Transformer(num_vq=num_vq_trans, 
                                 embed_dim=args_trans.embed_dim_gpt, 
                                 clip_dim=args_trans.clip_dim, 
@@ -98,7 +102,8 @@ trans_encoder = trans.Text2Motion_Transformer(num_vq=num_vq_trans,
                                 num_layers=args_trans.num_layers, 
                                 n_head=args_trans.n_head_gpt, 
                                 drop_out_rate=args_trans.drop_out_rate, 
-                                fc_rate=args_trans.ff_rate)
+                                fc_rate=args_trans.ff_rate,
+                                semantic_flag=semantic_flag)
 
 
 print ('loading checkpoint from {}'.format(args.resume_pth))

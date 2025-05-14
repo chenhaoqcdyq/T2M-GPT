@@ -283,7 +283,7 @@ python3 GPT_eval_multi.py  \
 --block-size 51 \
 --ff-rate 4 \
 --drop-out-rate 0.1 \
---resume-pth output/VQVAE/net_last.pth \
+--resume-pth pretrained/VQVAE/net_last.pth \
 --vq-name VQVAE \
 --out-dir output \
 --total-iter 300000 \
@@ -297,7 +297,7 @@ python3 GPT_eval_multi.py  \
 --pkeep 0.5 \
 --dilation-growth-rate 3 \
 --vq-act relu \
---resume-trans output/GPT/net_best_fid.pth
+--resume-trans pretrained/VQTransformer_corruption05/net_best_fid.pth
 ```
 
 </details>

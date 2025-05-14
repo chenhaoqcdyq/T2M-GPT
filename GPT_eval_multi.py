@@ -45,7 +45,7 @@ clip.model.convert_weights(clip_model)  # Actually this line is unnecessary sinc
 clip_model.eval()
 for p in clip_model.parameters():
     p.requires_grad = False
-
+args.down_vqvae=1
 net = vqvae.HumanVQVAE(args, ## use args to define different parameters in different quantizers
                        args.nb_code,
                        args.code_dim,

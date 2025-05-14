@@ -16,7 +16,8 @@ class Text2Motion_Transformer(nn.Module):
                 n_head=8, 
                 drop_out_rate=0.1, 
                 fc_rate=4,
-                semantic_flag=False):
+                semantic_flag=False,
+                semantic_interleaved_flag=False):
         super().__init__()
         self.trans_base = CrossCondTransBase(num_vq, embed_dim, clip_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate)
         self.trans_head = CrossCondTransHead(num_vq, embed_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate)
@@ -24,6 +25,7 @@ class Text2Motion_Transformer(nn.Module):
         self.num_vq = num_vq
         # self.reconstruction_flag = 0
         self.semantic_flag = semantic_flag
+        self.semantic_interleaved_flag = semantic_interleaved_flag
         # Define token ID constants
         # Assuming self.num_vq is the STOP_TOKEN_ID for the combined (semantic+separator+reconstruction) vocabulary.
         # Example: self.num_vq = 1025 means tokens 0-1024 are valid, 1025 is STOP.
@@ -90,13 +92,83 @@ class Text2Motion_Transformer(nn.Module):
         return xs
 
     def sample(self, clip_feature, if_categorial=False):
-        if not self.semantic_flag:
-            # Use the original sampling logic
-            return self.sample_original_backup(clip_feature, if_categorial)
-        else:
-            # Semantic-aware sampling logic
+        if self.semantic_interleaved_flag:
             xs = None
-            # semantic_flag is True, start with semantic phase
+            has_sampled_reconstruction_token = False
+            for k_loop_iter in range(self.block_size - 1):
+                current_input_for_transformer = xs if xs is not None else []
+                logits = self.forward(current_input_for_transformer, clip_feature)
+                logits = logits[:, -1, :]
+                probs_orig = F.softmax(logits, dim=-1)
+                temp_probs = probs_orig.clone()
+
+                k_pattern = k_loop_iter % 5
+
+                if k_pattern == 0: # Semantic token
+                    temp_probs[:, self.SEMANTIC_TOKEN_END_IDX + 1 : self.num_vq] = 0 # Mask out recon and separator
+                    temp_probs[:, self.num_vq] = 0 # Also mask out stop if no recon token yet and in semantic part of pattern
+                else: # Reconstruction token
+                    temp_probs[:, :self.RECONSTRUCTION_TOKEN_START_IDX] = 0 # Mask out semantic and separator
+                    # For stop token, if no reconstruction token has been sampled yet, mask stop.
+                    # Otherwise, use its original probability.
+                    if not has_sampled_reconstruction_token:
+                        temp_probs[:, self.num_vq] = 0
+                    # else: stop_token_prob is already in temp_probs from clone
+
+                batch_sums = temp_probs.sum(dim=-1, keepdim=True)
+                for i_batch in range(temp_probs.shape[0]):
+                    if batch_sums[i_batch] < 1e-9:
+                        temp_probs[i_batch, :] = 0
+                        if k_pattern == 0: # Semantic fallback
+                            # Try original probabilities for semantic range first
+                            allowed_orig_semantic_probs = probs_orig[i_batch, :self.SEMANTIC_TOKEN_END_IDX + 1]
+                            if allowed_orig_semantic_probs.sum() > 1e-9:
+                                temp_probs[i_batch, :self.SEMANTIC_TOKEN_END_IDX + 1] = allowed_orig_semantic_probs
+                                # if not has_sampled_reconstruction_token: temp_probs[i_batch, self.num_vq] = 0 # re-mask stop if needed (already done above)
+                            else: # Absolute fallback for semantic if original also zero
+                                temp_probs[i_batch, 0] = 1.0 # Force token 0
+                        else: # Reconstruction fallback
+                            allowed_orig_recon_probs = probs_orig[i_batch, self.RECONSTRUCTION_TOKEN_START_IDX : self.num_vq]
+                            if allowed_orig_recon_probs.sum() > 1e-9:
+                                temp_probs[i_batch, self.RECONSTRUCTION_TOKEN_START_IDX : self.num_vq] = allowed_orig_recon_probs
+                                if has_sampled_reconstruction_token: # if recon allowed, stop can also be considered
+                                    temp_probs[i_batch, self.num_vq] = probs_orig[i_batch, self.num_vq]
+                                # else: stop remains 0 if no recon sampled yet
+                            else: # Absolute fallback for reconstruction if original also zero
+                                temp_probs[i_batch, self.RECONSTRUCTION_TOKEN_START_IDX] = 1.0 # Force first recon token
+                
+                batch_sums = temp_probs.sum(dim=-1, keepdim=True)
+                probs_masked = temp_probs / (batch_sums + 1e-9)
+
+                idx_sampled_token_val = None
+                if if_categorial:
+                    dist = Categorical(probs_masked)
+                    idx_val = dist.sample()
+                    if idx_val == self.num_vq:
+                        break
+                    idx_sampled_token_val = idx_val.unsqueeze(-1)
+                else:
+                    _, idx_val_topk = torch.topk(probs_masked, k=1, dim=-1)
+                    if idx_val_topk[0,0] == self.num_vq:
+                        break
+                    idx_sampled_token_val = idx_val_topk
+
+                if xs is None:
+                    xs = idx_sampled_token_val
+                else:
+                    xs = torch.cat((xs, idx_sampled_token_val), dim=1)
+                
+                # Update flag if a reconstruction token was sampled
+                sampled_token_id = idx_sampled_token_val[0,0].item()
+                if self.RECONSTRUCTION_TOKEN_START_IDX <= sampled_token_id < self.num_vq:
+                    has_sampled_reconstruction_token = True
+            
+            if xs is None:
+                return torch.empty((clip_feature.shape[0], 0), dtype=torch.long, device=clip_feature.device)
+            return xs
+
+        elif self.semantic_flag:
+            xs = None
             current_sampling_phase = "semantic" 
             sampled_at_least_one_reconstruction_token = False
             
@@ -194,6 +266,8 @@ class Text2Motion_Transformer(nn.Module):
             if xs is None:
                 return torch.empty((clip_feature.shape[0], 0), dtype=torch.long, device=clip_feature.device)
             return xs
+        else:
+            return self.sample_original_backup(clip_feature, if_categorial)
 
 class CausalCrossConditionalSelfAttention(nn.Module):
 
