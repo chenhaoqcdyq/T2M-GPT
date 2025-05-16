@@ -104,7 +104,7 @@ eval_wrapper = EvaluatorModelWrapper(wrapper_opt)
 if args_vq.lgvq == 1 and args.sample_way != 2:
     num_vq_trans = args.nb_code * 2 + 1
 elif args_vq.lgvq == 1 and args.sample_way == 2:
-    num_vq_trans = args.nb_code * 2 + 2
+    num_vq_trans = args.nb_code
 else:
     num_vq_trans = args.nb_code
 # 测试codebook的size是否能够对生成进行提点
@@ -134,7 +134,8 @@ trans_encoder = trans.Text2Motion_Transformer(num_vq=num_vq_trans,
                                 drop_out_rate=args.drop_out_rate, 
                                 fc_rate=args.ff_rate,
                                 semantic_flag=semantic_flag,
-                                semantic_len=semantic_len)
+                                semantic_len=semantic_len,
+                                dual_head_flag=(args.sample_way == 2))
 
 
 if args.resume_trans is not None:
@@ -165,6 +166,8 @@ for batch in tqdm(train_loader_token):
     #             continue
     #     else:
     #         continue
+    if os.path.exists(pjoin(args.vq_dir, name[0] +'.npz')):
+        continue
     bs, seq = pose.shape[0], pose.shape[1]
 
     pose = pose.cuda().float() # bs, nb_joints, joints_dim, seq_len (1,124,263)
@@ -253,8 +256,8 @@ while nb_iter <= args.total_iter:
             # Accuracy
             probs = torch.softmax(cls_pred[i][:m_tokens_len[i] + 1], dim=-1)
         else:
-            cls_pred_all = torch.cat([cls_pred[i][:sem_tokens_len[i] + 1], cls_pred[i][semantic_len:m_tokens_len[i] + 1]], dim=-1)
-            target_all = torch.cat([target[i][:sem_tokens_len[i] + 1], target[i][semantic_len:m_tokens_len[i] + 1]], dim=-1)
+            cls_pred_all = torch.cat([cls_pred[i][:sem_tokens_len[i] + 1], cls_pred[i][semantic_len:m_tokens_len[i] + 1]], dim=0)
+            target_all = torch.cat([target[i][:sem_tokens_len[i] + 1], target[i][semantic_len:m_tokens_len[i] + 1]], dim=0)
             loss_cls += loss_ce(cls_pred_all, target_all) / bs
             probs = torch.softmax(cls_pred_all, dim=-1)
         
@@ -295,7 +298,7 @@ while nb_iter <= args.total_iter:
         nb_sample_train = 0
 
     if nb_iter % args.eval_iter ==  0:
-        best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model=clip_model, eval_wrapper=eval_wrapper, semantic_flag=(args_vq.lgvq==1 or args.test_nb))
+        best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model=clip_model, eval_wrapper=eval_wrapper, semantic_flag=(args_vq.lgvq==1 or args.test_nb), draw=False)
 
     if nb_iter == args.total_iter: 
         msg_final = f"Train. Iter {best_iter} : FID. {best_fid:.5f}, Diversity. {best_div:.4f}, TOP1. {best_top1:.4f}, TOP2. {best_top2:.4f}, TOP3. {best_top3:.4f}"

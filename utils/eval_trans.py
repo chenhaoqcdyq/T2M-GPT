@@ -263,8 +263,12 @@ def evaluation_transformer(out_dir, val_loader, net, trans, logger, writer, nb_i
                     index_motion = torch.ones(1,1).cuda().long()
                 if semantic_flag:
                     index_motion = index_motion[index_motion >= 513] - 513
+                    if index_motion.shape[0] == 0:
+                        index_motion = torch.ones(1,1).cuda().long()
                     pred_pose = net.forward_decoder(index_motion)
                 else:
+                    if index_motion.shape[0] == 0:
+                        index_motion = torch.ones(1,1).cuda().long()
                     pred_pose = net.forward_decoder(index_motion)
                 cur_len = pred_pose.shape[1]
 

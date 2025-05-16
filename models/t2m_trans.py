@@ -33,6 +33,7 @@ class Text2Motion_Transformer(nn.Module):
         self.semantic_flag = semantic_flag
         self.semantic_interleaved_flag = semantic_interleaved_flag
         self.dual_head_flag = dual_head_flag
+        self.semantic_len = semantic_len
         # Define token ID constants
         # Assuming self.num_vq is the STOP_TOKEN_ID for the combined (semantic+separator+reconstruction) vocabulary.
         # Example: self.num_vq = 1025 means tokens 0-1024 are valid, 1025 is STOP.
@@ -63,6 +64,76 @@ class Text2Motion_Transformer(nn.Module):
         logits = self.trans_head(feat)
         return logits
 
+    def sample_dual_head(self, clip_feature, if_categorial=False):
+        B = clip_feature.shape[0]
+        xs = None 
+        # semantic_content_has_ended_flags[i] is True if self.num_vq was sampled in semantic phase for batch item i
+        semantic_content_has_ended_flags = torch.zeros(B, dtype=torch.bool, device=clip_feature.device)
+
+        for _ in range(self.block_size): 
+            current_len = xs.shape[1] if xs is not None else 0
+            
+            if current_len >= self.block_size:
+                break
+
+            current_input_for_transformer = xs if xs is not None else []
+            
+            logits = self.forward(current_input_for_transformer, clip_feature)
+            logits = logits[:, -1, :] 
+            probs = F.softmax(logits, dim=-1) # (B, V)
+
+            next_step_tokens_for_batch = torch.zeros(B, dtype=torch.long, device=clip_feature.device)
+
+            if current_len < self.semantic_len: # Processing semantic part
+                candidate_tokens_this_step = None # Shape (B,)
+                if if_categorial:
+                    dist = Categorical(probs)
+                    candidate_tokens_this_step = dist.sample() 
+                else:
+                    _, topk_tokens = torch.topk(probs, k=1, dim=-1) 
+                    candidate_tokens_this_step = topk_tokens.squeeze(-1)
+
+                for i in range(B):
+                    if semantic_content_has_ended_flags[i]:
+                        # Semantic content for this item ended, force padding (self.num_vq)
+                        next_step_tokens_for_batch[i] = self.num_vq + 1
+                    else:
+                        token_for_item_i = candidate_tokens_this_step[i]
+                        if token_for_item_i == self.num_vq: # First time self.num_vq in semantic part
+                            semantic_content_has_ended_flags[i] = True 
+                        next_step_tokens_for_batch[i] = token_for_item_i
+                
+                idx_sampled_token_tensor = next_step_tokens_for_batch.unsqueeze(-1) # (B,1)
+
+            else: # Processing reconstruction part (current_len >= self.semantic_len)
+                # self.num_vq is true stop. Follows sample_original_backup style for batch stop.
+                idx_sampled_token_tensor = None 
+                if if_categorial:
+                    dist = Categorical(probs)
+                    idx_val_batch = dist.sample() # (B,)
+                    # Simplified batch stop: if first item stops, all stop.
+                    # A robust batch solution would mask completed sequences.
+                    if idx_val_batch[0] == self.num_vq: 
+                        break 
+                    idx_sampled_token_tensor = idx_val_batch.unsqueeze(-1)
+                else:
+                    _, idx_val_topk_batch = torch.topk(probs, k=1, dim=-1) # (B,1)
+                    if idx_val_topk_batch[0,0] == self.num_vq: 
+                        break 
+                    idx_sampled_token_tensor = idx_val_topk_batch
+            
+            if idx_sampled_token_tensor is None: # Should only happen if loop broke in recon phase
+                break
+
+            if xs is None:
+                xs = idx_sampled_token_tensor
+            else:
+                xs = torch.cat((xs, idx_sampled_token_tensor), dim=1)
+                
+        if xs is None: 
+            return torch.empty((B, 0), dtype=torch.long, device=clip_feature.device)
+        return xs
+    
     def sample_original_backup(self, clip_feature, if_categorial=False):
         """
         Original sampling logic, used when semantic_flag=False.
@@ -278,6 +349,8 @@ class Text2Motion_Transformer(nn.Module):
             return self.sample_interleaved(clip_feature, if_categorial)
         elif self.semantic_flag:
             return self.sample_semantic(clip_feature, if_categorial)
+        elif self.dual_head_flag:
+            return self.sample_dual_head(clip_feature, if_categorial)
         else:
             return self.sample_original_backup(clip_feature, if_categorial)
 
