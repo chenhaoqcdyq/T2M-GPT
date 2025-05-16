@@ -101,14 +101,26 @@ eval_wrapper = EvaluatorModelWrapper(wrapper_opt)
 
 
 
-if args_vq.lgvq == 1:
+if args_vq.lgvq == 1 and args.sample_way != 2:
     num_vq_trans = args.nb_code * 2 + 1
+elif args_vq.lgvq == 1 and args.sample_way == 2:
+    num_vq_trans = args.nb_code * 2 + 2
 else:
     num_vq_trans = args.nb_code
 if args_vq.lgvq == 1 and args.sample_way == 0:
     semantic_flag = True
 else:
     semantic_flag = False
+if "down_vqvae" in args_vq:
+    if args_vq.down_vqvae and args_vq.down_t == 2:
+        unit_length = 4
+    elif args_vq.down_vqvae and args_vq.down_t == 1:
+        unit_length = 2
+    else:
+        unit_length = 1
+else:
+    unit_length = 1
+semantic_len = ((196 // unit_length) + 3) // 4 + 1
 trans_encoder = trans.Text2Motion_Transformer(num_vq=num_vq_trans, 
                                 embed_dim=args.embed_dim_gpt, 
                                 clip_dim=args.clip_dim, 
@@ -117,7 +129,8 @@ trans_encoder = trans.Text2Motion_Transformer(num_vq=num_vq_trans,
                                 n_head=args.n_head_gpt, 
                                 drop_out_rate=args.drop_out_rate, 
                                 fc_rate=args.ff_rate,
-                                semantic_flag=semantic_flag)
+                                semantic_flag=semantic_flag,
+                                semantic_len=semantic_len)
 
 
 if args.resume_trans is not None:
@@ -181,15 +194,7 @@ if args_vq.lgvq == 1:
     from dataset import dataset_TM_train_sem as dataset_TM_train
 else:
     from dataset import dataset_TM_train
-if "down_vqvae" in args_vq:
-    if args_vq.down_vqvae and args_vq.down_t == 2:
-        unit_length = 4
-    elif args_vq.down_vqvae and args_vq.down_t == 1:
-        unit_length = 2
-    else:
-        unit_length = 1
-else:
-    unit_length = 1
+
 if 'sample_way' not in args:
     args.sample_way = 0
 train_loader = dataset_TM_train.DATALoader(args.dataname, args.batch_size, args.nb_code, vq_name, unit_length=unit_length, sample_way=args.sample_way)

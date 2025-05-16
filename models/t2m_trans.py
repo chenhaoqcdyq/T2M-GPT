@@ -17,15 +17,21 @@ class Text2Motion_Transformer(nn.Module):
                 drop_out_rate=0.1, 
                 fc_rate=4,
                 semantic_flag=False,
-                semantic_interleaved_flag=False):
+                semantic_interleaved_flag=False,
+                dual_head_flag=False,
+                semantic_len=50):
         super().__init__()
         self.trans_base = CrossCondTransBase(num_vq, embed_dim, clip_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate)
-        self.trans_head = CrossCondTransHead(num_vq, embed_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate)
+        if dual_head_flag:
+            self.trans_head = CrossCondTransDualHead(num_vq, embed_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate, semantic_len)
+        else:
+            self.trans_head = CrossCondTransHead(num_vq, embed_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate)
         self.block_size = block_size
         self.num_vq = num_vq
         # self.reconstruction_flag = 0
         self.semantic_flag = semantic_flag
         self.semantic_interleaved_flag = semantic_interleaved_flag
+        self.dual_head_flag = dual_head_flag
         # Define token ID constants
         # Assuming self.num_vq is the STOP_TOKEN_ID for the combined (semantic+separator+reconstruction) vocabulary.
         # Example: self.num_vq = 1025 means tokens 0-1024 are valid, 1025 is STOP.
@@ -91,181 +97,186 @@ class Text2Motion_Transformer(nn.Module):
             return torch.empty((clip_feature.shape[0], 0), dtype=torch.long, device=clip_feature.device)
         return xs
 
+    def sample_interleaved(self, clip_feature, if_categorial=False):
+        xs = None
+        has_sampled_reconstruction_token = False
+        for k_loop_iter in range(self.block_size - 1):
+            current_input_for_transformer = xs if xs is not None else []
+            logits = self.forward(current_input_for_transformer, clip_feature)
+            logits = logits[:, -1, :]
+            probs_orig = F.softmax(logits, dim=-1)
+            temp_probs = probs_orig.clone()
+
+            k_pattern = k_loop_iter % 5
+
+            if k_pattern == 0: # Semantic token
+                temp_probs[:, self.SEMANTIC_TOKEN_END_IDX + 1 : self.num_vq] = 0 # Mask out recon and separator
+                temp_probs[:, self.num_vq] = 0 # Also mask out stop if no recon token yet and in semantic part of pattern
+            else: # Reconstruction token
+                temp_probs[:, :self.RECONSTRUCTION_TOKEN_START_IDX] = 0 # Mask out semantic and separator
+                # For stop token, if no reconstruction token has been sampled yet, mask stop.
+                # Otherwise, use its original probability.
+                if not has_sampled_reconstruction_token:
+                    temp_probs[:, self.num_vq] = 0
+                # else: stop_token_prob is already in temp_probs from clone
+
+            batch_sums = temp_probs.sum(dim=-1, keepdim=True)
+            for i_batch in range(temp_probs.shape[0]):
+                if batch_sums[i_batch] < 1e-9:
+                    temp_probs[i_batch, :] = 0
+                    if k_pattern == 0: # Semantic fallback
+                        # Try original probabilities for semantic range first
+                        allowed_orig_semantic_probs = probs_orig[i_batch, :self.SEMANTIC_TOKEN_END_IDX + 1]
+                        if allowed_orig_semantic_probs.sum() > 1e-9:
+                            temp_probs[i_batch, :self.SEMANTIC_TOKEN_END_IDX + 1] = allowed_orig_semantic_probs
+                            # if not has_sampled_reconstruction_token: temp_probs[i_batch, self.num_vq] = 0 # re-mask stop if needed (already done above)
+                        else: # Absolute fallback for semantic if original also zero
+                            temp_probs[i_batch, 0] = 1.0 # Force token 0
+                    else: # Reconstruction fallback
+                        allowed_orig_recon_probs = probs_orig[i_batch, self.RECONSTRUCTION_TOKEN_START_IDX : self.num_vq]
+                        if allowed_orig_recon_probs.sum() > 1e-9:
+                            temp_probs[i_batch, self.RECONSTRUCTION_TOKEN_START_IDX : self.num_vq] = allowed_orig_recon_probs
+                            if has_sampled_reconstruction_token: # if recon allowed, stop can also be considered
+                                temp_probs[i_batch, self.num_vq] = probs_orig[i_batch, self.num_vq]
+                            # else: stop remains 0 if no recon sampled yet
+                        else: # Absolute fallback for reconstruction if original also zero
+                            temp_probs[i_batch, self.RECONSTRUCTION_TOKEN_START_IDX] = 1.0 # Force first recon token
+            
+            batch_sums = temp_probs.sum(dim=-1, keepdim=True)
+            probs_masked = temp_probs / (batch_sums + 1e-9)
+
+            idx_sampled_token_val = None
+            if if_categorial:
+                dist = Categorical(probs_masked)
+                idx_val = dist.sample()
+                if idx_val == self.num_vq:
+                    break
+                idx_sampled_token_val = idx_val.unsqueeze(-1)
+            else:
+                _, idx_val_topk = torch.topk(probs_masked, k=1, dim=-1)
+                if idx_val_topk[0,0] == self.num_vq:
+                    break
+                idx_sampled_token_val = idx_val_topk
+
+            if xs is None:
+                xs = idx_sampled_token_val
+            else:
+                xs = torch.cat((xs, idx_sampled_token_val), dim=1)
+            
+            # Update flag if a reconstruction token was sampled
+            sampled_token_id = idx_sampled_token_val[0,0].item()
+            if self.RECONSTRUCTION_TOKEN_START_IDX <= sampled_token_id < self.num_vq:
+                has_sampled_reconstruction_token = True
+        
+        if xs is None:
+            return torch.empty((clip_feature.shape[0], 0), dtype=torch.long, device=clip_feature.device)
+        return xs
+    
+    def sample_semantic(self, clip_feature, if_categorial=False):
+        xs = None
+        current_sampling_phase = "semantic" 
+        sampled_at_least_one_reconstruction_token = False
+        
+        # Loop to generate up to block_size - 1 tokens
+        # (condition clip_feature takes one spot in the transformer's view, 
+        # effectively allowing block_size-1 generated tokens to form a sequence of self.block_size with condition)
+        for k_loop_iter in range(self.block_size -1): 
+            current_input_for_transformer = xs if xs is not None else []
+            
+            logits = self.forward(current_input_for_transformer, clip_feature)
+            logits = logits[:, -1, :] 
+            probs = F.softmax(logits, dim=-1)
+
+            # Mask probabilities based on the current sampling phase
+            # self.num_vq is the ID of the stop token. Max actual data token ID is self.num_vq - 1.
+            temp_probs = probs.clone()
+
+            if current_sampling_phase == "semantic":
+                # Allow [0, SEMANTIC_TOKEN_END_IDX] or SEPARATOR_TOKEN_IDX
+                # Block [RECONSTRUCTION_TOKEN_START_IDX, self.num_vq-1 (max_token_id)]
+                temp_probs[:, self.RECONSTRUCTION_TOKEN_START_IDX : self.num_vq] = 0 
+                # Also block explicit stop if in semantic phase before separator
+                temp_probs[:, self.num_vq] = 0 
+                    # If all semantic token probabilities are extremely low, force SEPARATOR_TOKEN_IDX
+                if torch.sum(temp_probs[:, :self.SEPARATOR_TOKEN_IDX]) < 1e-9 :
+                    temp_probs[:, :self.SEPARATOR_TOKEN_IDX+1] = 0 # Zero out semantic and separator initially
+                    temp_probs[:, self.SEPARATOR_TOKEN_IDX] = 1.0 # Force separator
+
+            elif current_sampling_phase == "reconstruction":
+                # Allow [RECONSTRUCTION_TOKEN_START_IDX, self.num_vq-1] or STOP_TOKEN (self.num_vq)
+                # Block all semantic tokens and the separator token
+                temp_probs[:, :self.RECONSTRUCTION_TOKEN_START_IDX] = 0
+            
+            # Renormalize probabilities
+            batch_sums = temp_probs.sum(dim=-1, keepdim=True)
+            # Handle cases where all valid probabilities become zero after masking
+            for i_batch in range(temp_probs.shape[0]):
+                if batch_sums[i_batch] < 1e-9: # If sum is too small
+                    if current_sampling_phase == "semantic":
+                        # Fallback: force SEPARATOR_TOKEN_IDX
+                        temp_probs[i_batch, :] = 0
+                        temp_probs[i_batch, self.SEPARATOR_TOKEN_IDX] = 1.0
+                    else: # reconstruction phase
+                        # Fallback: force STOP_TOKEN_ID
+                        temp_probs[i_batch, :] = 0
+                        temp_probs[i_batch, self.num_vq] = 1.0 
+            # Re-calculate sums after potential fallback
+            batch_sums = temp_probs.sum(dim=-1, keepdim=True)
+            # Avoid division by zero if somehow still all zeros (should be caught by fallback)
+            probs_masked = temp_probs / (batch_sums + 1e-9)
+
+
+            # Sample token from masked probabilities
+            idx_sampled_token_val = None
+            if if_categorial:
+                dist = Categorical(probs_masked)
+                idx_val = dist.sample()
+                if idx_val == self.num_vq: # Stop token
+                    break
+                idx_sampled_token_val = idx_val.unsqueeze(-1)
+            else:
+                _, idx_val_topk = torch.topk(probs_masked, k=1, dim=-1)
+                if idx_val_topk[0,0] == self.num_vq: # Stop token
+                    break
+                idx_sampled_token_val = idx_val_topk
+
+            # Append to sequence
+            if xs is None:
+                xs = idx_sampled_token_val
+            else:
+                xs = torch.cat((xs, idx_sampled_token_val), dim=1)
+
+            # Update phase and flags
+            sampled_token_id = idx_sampled_token_val[0,0].item()
+            if current_sampling_phase == "semantic" and sampled_token_id == self.SEPARATOR_TOKEN_IDX:
+                current_sampling_phase = "reconstruction"
+            elif current_sampling_phase == "reconstruction":
+                if self.RECONSTRUCTION_TOKEN_START_IDX <= sampled_token_id < self.num_vq:
+                    sampled_at_least_one_reconstruction_token = True
+        
+        # After loop, ensure reconstruction token if needed
+        if current_sampling_phase == "reconstruction" and not sampled_at_least_one_reconstruction_token:
+            # If sequence is empty or only separator, add a reconstruction token
+            if xs is None or xs.shape[1] == 0 :
+                xs = torch.tensor([[self.RECONSTRUCTION_TOKEN_START_IDX]], dtype=torch.long, device=clip_feature.device)
+            elif xs[0,-1].item() == self.SEPARATOR_TOKEN_IDX: # Ends with separator
+                # Append a reconstruction token if space allows (block_size-1 max generated tokens)
+                if xs.shape[1] < (self.block_size -1):
+                    xs = torch.cat((xs, torch.tensor([[self.RECONSTRUCTION_TOKEN_START_IDX]], dtype=torch.long, device=clip_feature.device)), dim=1)
+                else: # No space, replace separator
+                    xs[0,-1] = self.RECONSTRUCTION_TOKEN_START_IDX
+            elif xs[0,-1].item() != self.num_vq : # Last token is not STOP and not SEPARATOR
+                xs[0,-1] = self.RECONSTRUCTION_TOKEN_START_IDX # Replace last token
+
+        if xs is None:
+            return torch.empty((clip_feature.shape[0], 0), dtype=torch.long, device=clip_feature.device)
+        return xs
+
     def sample(self, clip_feature, if_categorial=False):
         if self.semantic_interleaved_flag:
-            xs = None
-            has_sampled_reconstruction_token = False
-            for k_loop_iter in range(self.block_size - 1):
-                current_input_for_transformer = xs if xs is not None else []
-                logits = self.forward(current_input_for_transformer, clip_feature)
-                logits = logits[:, -1, :]
-                probs_orig = F.softmax(logits, dim=-1)
-                temp_probs = probs_orig.clone()
-
-                k_pattern = k_loop_iter % 5
-
-                if k_pattern == 0: # Semantic token
-                    temp_probs[:, self.SEMANTIC_TOKEN_END_IDX + 1 : self.num_vq] = 0 # Mask out recon and separator
-                    temp_probs[:, self.num_vq] = 0 # Also mask out stop if no recon token yet and in semantic part of pattern
-                else: # Reconstruction token
-                    temp_probs[:, :self.RECONSTRUCTION_TOKEN_START_IDX] = 0 # Mask out semantic and separator
-                    # For stop token, if no reconstruction token has been sampled yet, mask stop.
-                    # Otherwise, use its original probability.
-                    if not has_sampled_reconstruction_token:
-                        temp_probs[:, self.num_vq] = 0
-                    # else: stop_token_prob is already in temp_probs from clone
-
-                batch_sums = temp_probs.sum(dim=-1, keepdim=True)
-                for i_batch in range(temp_probs.shape[0]):
-                    if batch_sums[i_batch] < 1e-9:
-                        temp_probs[i_batch, :] = 0
-                        if k_pattern == 0: # Semantic fallback
-                            # Try original probabilities for semantic range first
-                            allowed_orig_semantic_probs = probs_orig[i_batch, :self.SEMANTIC_TOKEN_END_IDX + 1]
-                            if allowed_orig_semantic_probs.sum() > 1e-9:
-                                temp_probs[i_batch, :self.SEMANTIC_TOKEN_END_IDX + 1] = allowed_orig_semantic_probs
-                                # if not has_sampled_reconstruction_token: temp_probs[i_batch, self.num_vq] = 0 # re-mask stop if needed (already done above)
-                            else: # Absolute fallback for semantic if original also zero
-                                temp_probs[i_batch, 0] = 1.0 # Force token 0
-                        else: # Reconstruction fallback
-                            allowed_orig_recon_probs = probs_orig[i_batch, self.RECONSTRUCTION_TOKEN_START_IDX : self.num_vq]
-                            if allowed_orig_recon_probs.sum() > 1e-9:
-                                temp_probs[i_batch, self.RECONSTRUCTION_TOKEN_START_IDX : self.num_vq] = allowed_orig_recon_probs
-                                if has_sampled_reconstruction_token: # if recon allowed, stop can also be considered
-                                    temp_probs[i_batch, self.num_vq] = probs_orig[i_batch, self.num_vq]
-                                # else: stop remains 0 if no recon sampled yet
-                            else: # Absolute fallback for reconstruction if original also zero
-                                temp_probs[i_batch, self.RECONSTRUCTION_TOKEN_START_IDX] = 1.0 # Force first recon token
-                
-                batch_sums = temp_probs.sum(dim=-1, keepdim=True)
-                probs_masked = temp_probs / (batch_sums + 1e-9)
-
-                idx_sampled_token_val = None
-                if if_categorial:
-                    dist = Categorical(probs_masked)
-                    idx_val = dist.sample()
-                    if idx_val == self.num_vq:
-                        break
-                    idx_sampled_token_val = idx_val.unsqueeze(-1)
-                else:
-                    _, idx_val_topk = torch.topk(probs_masked, k=1, dim=-1)
-                    if idx_val_topk[0,0] == self.num_vq:
-                        break
-                    idx_sampled_token_val = idx_val_topk
-
-                if xs is None:
-                    xs = idx_sampled_token_val
-                else:
-                    xs = torch.cat((xs, idx_sampled_token_val), dim=1)
-                
-                # Update flag if a reconstruction token was sampled
-                sampled_token_id = idx_sampled_token_val[0,0].item()
-                if self.RECONSTRUCTION_TOKEN_START_IDX <= sampled_token_id < self.num_vq:
-                    has_sampled_reconstruction_token = True
-            
-            if xs is None:
-                return torch.empty((clip_feature.shape[0], 0), dtype=torch.long, device=clip_feature.device)
-            return xs
-
+            return self.sample_interleaved(clip_feature, if_categorial)
         elif self.semantic_flag:
-            xs = None
-            current_sampling_phase = "semantic" 
-            sampled_at_least_one_reconstruction_token = False
-            
-            # Loop to generate up to block_size - 1 tokens
-            # (condition clip_feature takes one spot in the transformer's view, 
-            # effectively allowing block_size-1 generated tokens to form a sequence of self.block_size with condition)
-            for k_loop_iter in range(self.block_size -1): 
-                current_input_for_transformer = xs if xs is not None else []
-                
-                logits = self.forward(current_input_for_transformer, clip_feature)
-                logits = logits[:, -1, :] 
-                probs = F.softmax(logits, dim=-1)
-
-                # Mask probabilities based on the current sampling phase
-                # self.num_vq is the ID of the stop token. Max actual data token ID is self.num_vq - 1.
-                temp_probs = probs.clone()
-
-                if current_sampling_phase == "semantic":
-                    # Allow [0, SEMANTIC_TOKEN_END_IDX] or SEPARATOR_TOKEN_IDX
-                    # Block [RECONSTRUCTION_TOKEN_START_IDX, self.num_vq-1 (max_token_id)]
-                    temp_probs[:, self.RECONSTRUCTION_TOKEN_START_IDX : self.num_vq] = 0 
-                    # Also block explicit stop if in semantic phase before separator
-                    temp_probs[:, self.num_vq] = 0 
-                     # If all semantic token probabilities are extremely low, force SEPARATOR_TOKEN_IDX
-                    if torch.sum(temp_probs[:, :self.SEPARATOR_TOKEN_IDX]) < 1e-9 :
-                        temp_probs[:, :self.SEPARATOR_TOKEN_IDX+1] = 0 # Zero out semantic and separator initially
-                        temp_probs[:, self.SEPARATOR_TOKEN_IDX] = 1.0 # Force separator
-
-                elif current_sampling_phase == "reconstruction":
-                    # Allow [RECONSTRUCTION_TOKEN_START_IDX, self.num_vq-1] or STOP_TOKEN (self.num_vq)
-                    # Block all semantic tokens and the separator token
-                    temp_probs[:, :self.RECONSTRUCTION_TOKEN_START_IDX] = 0
-                
-                # Renormalize probabilities
-                batch_sums = temp_probs.sum(dim=-1, keepdim=True)
-                # Handle cases where all valid probabilities become zero after masking
-                for i_batch in range(temp_probs.shape[0]):
-                    if batch_sums[i_batch] < 1e-9: # If sum is too small
-                        if current_sampling_phase == "semantic":
-                            # Fallback: force SEPARATOR_TOKEN_IDX
-                            temp_probs[i_batch, :] = 0
-                            temp_probs[i_batch, self.SEPARATOR_TOKEN_IDX] = 1.0
-                        else: # reconstruction phase
-                            # Fallback: force STOP_TOKEN_ID
-                            temp_probs[i_batch, :] = 0
-                            temp_probs[i_batch, self.num_vq] = 1.0 
-                # Re-calculate sums after potential fallback
-                batch_sums = temp_probs.sum(dim=-1, keepdim=True)
-                # Avoid division by zero if somehow still all zeros (should be caught by fallback)
-                probs_masked = temp_probs / (batch_sums + 1e-9)
-
-
-                # Sample token from masked probabilities
-                idx_sampled_token_val = None
-                if if_categorial:
-                    dist = Categorical(probs_masked)
-                    idx_val = dist.sample()
-                    if idx_val == self.num_vq: # Stop token
-                        break
-                    idx_sampled_token_val = idx_val.unsqueeze(-1)
-                else:
-                    _, idx_val_topk = torch.topk(probs_masked, k=1, dim=-1)
-                    if idx_val_topk[0,0] == self.num_vq: # Stop token
-                        break
-                    idx_sampled_token_val = idx_val_topk
-
-                # Append to sequence
-                if xs is None:
-                    xs = idx_sampled_token_val
-                else:
-                    xs = torch.cat((xs, idx_sampled_token_val), dim=1)
-
-                # Update phase and flags
-                sampled_token_id = idx_sampled_token_val[0,0].item()
-                if current_sampling_phase == "semantic" and sampled_token_id == self.SEPARATOR_TOKEN_IDX:
-                    current_sampling_phase = "reconstruction"
-                elif current_sampling_phase == "reconstruction":
-                    if self.RECONSTRUCTION_TOKEN_START_IDX <= sampled_token_id < self.num_vq:
-                        sampled_at_least_one_reconstruction_token = True
-            
-            # After loop, ensure reconstruction token if needed
-            if current_sampling_phase == "reconstruction" and not sampled_at_least_one_reconstruction_token:
-                # If sequence is empty or only separator, add a reconstruction token
-                if xs is None or xs.shape[1] == 0 :
-                    xs = torch.tensor([[self.RECONSTRUCTION_TOKEN_START_IDX]], dtype=torch.long, device=clip_feature.device)
-                elif xs[0,-1].item() == self.SEPARATOR_TOKEN_IDX: # Ends with separator
-                    # Append a reconstruction token if space allows (block_size-1 max generated tokens)
-                    if xs.shape[1] < (self.block_size -1):
-                        xs = torch.cat((xs, torch.tensor([[self.RECONSTRUCTION_TOKEN_START_IDX]], dtype=torch.long, device=clip_feature.device)), dim=1)
-                    else: # No space, replace separator
-                        xs[0,-1] = self.RECONSTRUCTION_TOKEN_START_IDX
-                elif xs[0,-1].item() != self.num_vq : # Last token is not STOP and not SEPARATOR
-                    xs[0,-1] = self.RECONSTRUCTION_TOKEN_START_IDX # Replace last token
-
-            if xs is None:
-                return torch.empty((clip_feature.shape[0], 0), dtype=torch.long, device=clip_feature.device)
-            return xs
+            return self.sample_semantic(clip_feature, if_categorial)
         else:
             return self.sample_original_backup(clip_feature, if_categorial)
 
@@ -376,6 +387,65 @@ class CrossCondTransBase(nn.Module):
 
         return x
 
+class CrossCondTransDualBase(nn.Module):
+
+    def __init__(self, 
+                num_vq=1024, 
+                embed_dim=512, 
+                clip_dim=512, 
+                block_size=16, 
+                num_layers=2, 
+                n_head=8, 
+                drop_out_rate=0.1, 
+                fc_rate=4,
+                semantic_len = 50):
+        super().__init__()
+        self.tok_emb = nn.ModuleList([nn.Embedding(num_vq + 2, embed_dim) for _ in range(2)])
+        self.cond_emb = nn.Linear(clip_dim, embed_dim)
+        self.pos_embedding = nn.Embedding(block_size, embed_dim)
+        self.drop = nn.Dropout(drop_out_rate)
+        self.semantic_len = semantic_len
+        # transformer block
+        self.blocks = nn.Sequential(*[Block(embed_dim, block_size, n_head, drop_out_rate, fc_rate) for _ in range(num_layers)])
+        self.pos_embed = pos_encoding.PositionEmbedding(block_size, embed_dim, 0.0, False)
+
+        self.block_size = block_size
+
+        self.apply(self._init_weights)
+
+    def get_block_size(self):
+        return self.block_size
+
+    def _init_weights(self, module):
+        if isinstance(module, (nn.Linear, nn.Embedding)):
+            module.weight.data.normal_(mean=0.0, std=0.02)
+            if isinstance(module, nn.Linear) and module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+    
+    def forward(self, idx, clip_feature):
+        if len(idx) == 0:
+            token_embeddings = self.cond_emb(clip_feature).unsqueeze(1)
+        elif len(idx) <= self.semantic_len:
+            b, t = idx.size()
+            assert t <= self.block_size, "Cannot forward, model block size is exhausted."
+            token_embeddings = self.tok_emb[0](idx)
+            token_embeddings = torch.cat([self.cond_emb(clip_feature).unsqueeze(1), token_embeddings], dim=1)
+        else:
+            b, t = idx.size()
+            assert t <= self.block_size, "Cannot forward, model block size is exhausted."
+            # forward the Trans model
+            token_sem_embeddings = self.tok_emb[0](idx[:self.semantic_len])
+            token_recon_embeddings = self.tok_emb[1](idx[self.semantic_len:])
+            token_embeddings = torch.cat([self.cond_emb(clip_feature).unsqueeze(1), token_sem_embeddings, token_recon_embeddings], dim=1)
+            
+        x = self.pos_embed(token_embeddings)
+        x = self.blocks(x)
+
+        return x
+
 
 class CrossCondTransHead(nn.Module):
 
@@ -415,7 +485,51 @@ class CrossCondTransHead(nn.Module):
         return logits
 
     
+class CrossCondTransDualHead(nn.Module):
 
+    def __init__(self, 
+                num_vq=1024, 
+                embed_dim=512, 
+                block_size=16, 
+                num_layers=2, 
+                n_head=8, 
+                drop_out_rate=0.1, 
+                fc_rate=4,
+                semantic_len = 50):
+        super().__init__()
+
+        self.blocks = nn.Sequential(*[Block(embed_dim, block_size, n_head, drop_out_rate, fc_rate) for _ in range(num_layers)])
+        self.ln_f = nn.ModuleList([nn.LayerNorm(embed_dim) for _ in range(2)])
+        self.heads = nn.ModuleList([nn.Linear(embed_dim, num_vq + 1, bias=False) for _ in range(2)])
+        self.semantic_len = semantic_len
+        # self.ln_f = nn.LayerNorm(embed_dim)
+        # self.head = nn.Linear(embed_dim, num_vq + 1, bias=False)
+        self.block_size = block_size
+
+        self.apply(self._init_weights)
+
+    def get_block_size(self):
+        return self.block_size
+
+    def _init_weights(self, module):
+        if isinstance(module, (nn.Linear, nn.Embedding)):
+            module.weight.data.normal_(mean=0.0, std=0.02)
+            if isinstance(module, nn.Linear) and module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+
+    def forward(self, x):
+        x = self.blocks(x)
+        x_semantic = x[:, :self.semantic_len, :]
+        x_recon = x[:, self.semantic_len:, :]
+        x_semantic = self.ln_f[0](x_semantic)
+        x_recon = self.ln_f[1](x_recon)
+        logits_semantic = self.heads[0](x_semantic)
+        logits_recon = self.heads[1](x_recon)
+        logits_result = torch.cat([logits_semantic, logits_recon], dim=1)
+        return logits_result
 
         
 

@@ -25,10 +25,17 @@ class Text2MotionDataset(data.Dataset):
 
         self.unit_length = unit_length
         # self.sem_start_idx = 0
-        self.sem_end_idx = sem_codebook_size
-        self.start_motion_idx = self.sem_end_idx + 1
-        self.mot_end_idx = codebook_size + self.start_motion_idx
-        self.mot_pad_idx = self.mot_end_idx + 1
+        if sample_way == 2:
+            self.sem_end_idx = sem_codebook_size # 512
+            self.sem_pad_idx = self.sem_end_idx + 1 # 513
+            self.start_motion_idx = 0
+            self.mot_end_idx = codebook_size + self.start_motion_idx # 512
+            self.mot_pad_idx = self.mot_end_idx + 1 # 513
+        else:
+            self.sem_end_idx = sem_codebook_size
+            self.start_motion_idx = self.sem_end_idx + 1
+            self.mot_end_idx = codebook_size + self.start_motion_idx
+            self.mot_pad_idx = self.mot_end_idx + 1
         
         self.sample_way = sample_way
         
@@ -54,10 +61,11 @@ class Text2MotionDataset(data.Dataset):
             kinematic_chain = paramUtil.kit_kinematic_chain
 
         split_file = pjoin(self.data_root, 'train.txt')
-        self.max_motion_length = 196 // unit_length + 4
+        self.max_motion_length = 196 // unit_length + 4 # 4个特殊符号
         if self.down_sample:
             self.max_motion_length = self.max_motion_length + (self.max_motion_length - 4) // 4
-        
+        # if self.sample_way == 2:
+        self.sem_max_length = ((196 // unit_length) + 3) // 4 + 1
 
         id_list = []
         with cs.open(split_file, 'r') as f:
@@ -166,6 +174,46 @@ class Text2MotionDataset(data.Dataset):
                 m_tokens_result = np.concatenate([m_tokens_sem, np.ones((1), dtype=int) * self.mot_end_idx, np.ones((self.max_motion_length-1-m_tokens_len), dtype=int) * self.mot_pad_idx], axis=0)
             else:
                 m_tokens_result = np.concatenate([m_tokens_sem, np.ones((1), dtype=int) * self.mot_end_idx], axis=0)
+        elif self.sample_way == 2:
+            # 1. Process Semantic Tokens
+            current_sem_tokens_list = list(sem_tokens) 
+            
+            if len(current_sem_tokens_list) >= self.sem_max_length:
+                # Truncate and add end token
+                processed_sem_part_list = current_sem_tokens_list[:self.sem_max_length-1] + [self.sem_end_idx]
+            else:
+                # Add end token and pad
+                processed_sem_part_list = current_sem_tokens_list + [self.sem_end_idx]
+                sem_padding_count = self.sem_max_length - len(processed_sem_part_list)
+                if sem_padding_count > 0:
+                    processed_sem_part_list.extend([self.sem_pad_idx] * sem_padding_count)
+            
+            processed_sem_tokens_np = np.array(processed_sem_part_list, dtype=int)
+
+            # 2. Process Motion Tokens
+            motion_tokens_adjusted = m_tokens + self.start_motion_idx
+
+            # 3. Combine semantic and motion tokens, then add motion end token
+            combined_tokens_np = np.concatenate((processed_sem_tokens_np.reshape(-1), motion_tokens_adjusted.reshape(-1)))
+            
+            final_tokens_list = list(combined_tokens_np)
+            final_tokens_list.append(self.mot_end_idx)
+
+            # 4. Pad or Truncate to self.max_motion_length
+            current_length_with_mot_end = len(final_tokens_list)
+
+            if current_length_with_mot_end < self.max_motion_length:
+                mot_padding_count = self.max_motion_length - current_length_with_mot_end
+                final_tokens_list.extend([self.mot_pad_idx] * mot_padding_count)
+            elif current_length_with_mot_end > self.max_motion_length:
+                final_tokens_list = final_tokens_list[:self.max_motion_length-1]
+                final_tokens_list.append(self.mot_end_idx)
+            
+            m_tokens_result = np.array(final_tokens_list, dtype=int)
+            
+            # 5. Calculate m_tokens_len
+            m_tokens_len = min(current_length_with_mot_end, self.max_motion_length)
+
         return caption, m_tokens_result.reshape(-1), m_tokens_len
 
 

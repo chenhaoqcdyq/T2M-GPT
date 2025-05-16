@@ -6,8 +6,6 @@ import torch.nn.functional as F
 import numpy as np
 from einops import rearrange
 from transformers import BertTokenizer, BertModel
-from models.tma.models.architectures.temos.textencoder.distillbert_actor import DistilbertActorAgnosticEncoder
-from models.tma.models.architectures.temos.motionencoder.actor import ActorAgnosticEncoder
 from models.vq.residual_vq import ResidualVQ
 
 class Encoder(nn.Module):

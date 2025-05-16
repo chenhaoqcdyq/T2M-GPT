@@ -16,7 +16,7 @@ def collate_fn(batch):
 
 '''For use of training text-2-motion generative model'''
 class Text2MotionDataset(data.Dataset):
-    def __init__(self, dataset_name, feat_bias = 5, unit_length = 4, codebook_size = 1024, tokenizer_name=None):
+    def __init__(self, dataset_name, feat_bias = 5, unit_length = 4, codebook_size = 1024, tokenizer_name=None, test_nb=False):
         
         self.max_length = 64
         self.pointer = 0
@@ -24,6 +24,7 @@ class Text2MotionDataset(data.Dataset):
 
         self.unit_length = unit_length
         # self.mot_start_idx = codebook_size
+        self.codebook_size = codebook_size
         self.mot_end_idx = codebook_size
         self.mot_pad_idx = codebook_size + 1
         if dataset_name == 't2m':
@@ -49,7 +50,7 @@ class Text2MotionDataset(data.Dataset):
 
         split_file = pjoin(self.data_root, 'train.txt')
 
-
+        self.test_nb = test_nb
         id_list = []
         with cs.open(split_file, 'r') as f:
             for line in f.readlines():
@@ -135,6 +136,9 @@ class Text2MotionDataset(data.Dataset):
             m_tokens = np.concatenate([m_tokens, np.ones((1), dtype=int) * self.mot_end_idx, np.ones((self.max_motion_length-1-m_tokens_len), dtype=int) * self.mot_pad_idx], axis=0)
         else:
             m_tokens = np.concatenate([m_tokens, np.ones((1), dtype=int) * self.mot_end_idx], axis=0)
+        
+        if self.test_nb:
+            m_tokens = m_tokens + self.codebook_size + 1 # 513
 
         return caption, m_tokens.reshape(-1), m_tokens_len
 

@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import time
 
 import torch
 import torch.optim as optim
@@ -18,7 +19,7 @@ from models.evaluator_wrapper import EvaluatorModelWrapper
 import warnings
 warnings.filterwarnings('ignore')
 from utils.word_vectorizer import WordVectorizer
-from models.tma.models.architectures.temos.textencoder.distillbert_actor import DistilbertActorAgnosticEncoder
+# from models.tma.models.architectures.temos.textencoder.distillbert_actor import DistilbertActorAgnosticEncoder
 torch.autograd.set_detect_anomaly(True)
 def freeze_encdec(net):
     for name, param in net.named_parameters():
@@ -154,6 +155,7 @@ Loss = losses.ReConsLoss(args.recons_loss, args.nb_joints)
 avg_recons, avg_perplexity, avg_commit = 0., 0., 0.
 avg_contrastive, avg_mlm = 0., 0.
 
+warmup_start_time = time.time()
 for nb_iter in range(1, args.warm_up_iter):
     
     optimizer, current_lr = update_lr_warm_up(optimizer, nb_iter, args.warm_up_iter, args.lr)
@@ -174,7 +176,7 @@ for nb_iter in range(1, args.warm_up_iter):
     gt_motion = gt_motion.cuda().float() # (bs, 64, dim)
     if gt_motion_mask is not None:
         gt_motion_mask = gt_motion_mask.cuda().long() # (bs, 64)
-
+    # time
     pred_motion, loss_commit, perplexity, loss_lgvq = net(gt_motion, gt_motion_mask, text_mask, name)
     loss_motion = Loss(pred_motion, gt_motion, gt_motion_mask)
     loss_vel = Loss.forward_vel(pred_motion, gt_motion, gt_motion_mask)
@@ -227,7 +229,10 @@ for nb_iter in range(1, args.total_iter + 1):
     gt_motion = gt_motion.cuda().float() # bs, nb_joints, joints_dim, seq_len
     if gt_motion_mask is not None:
         gt_motion_mask = gt_motion_mask.cuda().long() # bs, seq_len
+    net_start_time = time.time()
     pred_motion, loss_commit, perplexity, loss_lgvq = net(gt_motion, gt_motion_mask, text_mask, name)
+    net_end_time = time.time()
+    logger.info(f"Net forward time: {(net_end_time - net_start_time)*1000:.2f} ms")
     contrastive_loss, mlm_loss = loss_lgvq
     loss_motion = Loss(pred_motion, gt_motion, gt_motion_mask)
     loss_vel = Loss.forward_vel(pred_motion, gt_motion, gt_motion_mask)
