@@ -225,7 +225,7 @@ def evaluation_vqvae(out_dir, val_loader, net, logger, writer, nb_iter, best_fid
 
 
 @torch.no_grad()        
-def evaluation_transformer(out_dir, val_loader, net, trans, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model, eval_wrapper, draw = True, save = True, savegif=False, semantic_flag=False) : 
+def evaluation_transformer(out_dir, val_loader, net, trans, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model, eval_wrapper, draw = True, save = True, savegif=False, semantic_flag=False, dual_head_flag=False) : 
 
     trans.eval()
     nb_sample = 0
@@ -260,15 +260,20 @@ def evaluation_transformer(out_dir, val_loader, net, trans, logger, writer, nb_i
                 try:
                     index_motion = trans.sample(feat_clip_text[k:k+1], False)
                 except:
-                    index_motion = torch.ones(1,1).cuda().long()
+                    index_motion = torch.ones(1,4).cuda().long()
                 if semantic_flag:
                     index_motion = index_motion[index_motion >= 513] - 513
                     if index_motion.shape[0] == 0:
-                        index_motion = torch.ones(1,1).cuda().long()
+                        index_motion = torch.ones(1,4).cuda().long()
+                    pred_pose = net.forward_decoder(index_motion)
+                elif dual_head_flag:
+                    index_motion = index_motion[..., trans.semantic_len:]
+                    if index_motion.shape[0] == 0:
+                        index_motion = torch.ones(1,4).cuda().long()
                     pred_pose = net.forward_decoder(index_motion)
                 else:
                     if index_motion.shape[0] == 0:
-                        index_motion = torch.ones(1,1).cuda().long()
+                        index_motion = torch.ones(1,4).cuda().long()
                     pred_pose = net.forward_decoder(index_motion)
                 cur_len = pred_pose.shape[1]
 
