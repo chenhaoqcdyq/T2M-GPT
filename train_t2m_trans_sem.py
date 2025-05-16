@@ -107,6 +107,10 @@ elif args_vq.lgvq == 1 and args.sample_way == 2:
     num_vq_trans = args.nb_code * 2 + 2
 else:
     num_vq_trans = args.nb_code
+# 测试codebook的size是否能够对生成进行提点
+if args.test_nb:
+    num_vq_trans = args.nb_code * 2 + 1
+print("num_vq_trans = ", num_vq_trans)
 if args_vq.lgvq == 1 and args.sample_way == 0:
     semantic_flag = True
 else:
@@ -192,12 +196,14 @@ for batch in tqdm(train_loader_token):
 
 if args_vq.lgvq == 1:
     from dataset import dataset_TM_train_sem as dataset_TM_train
+    if 'sample_way' not in args:
+        args.sample_way = 0
+    train_loader = dataset_TM_train.DATALoader(args.dataname, args.batch_size, args.nb_code, vq_name, unit_length=unit_length, sample_way=args.sample_way)
 else:
     from dataset import dataset_TM_train
+    train_loader = dataset_TM_train.DATALoader(args.dataname, args.batch_size, args.nb_code, vq_name, unit_length=unit_length, test_nb=args.test_nb if 'test_nb' in args else False)
 
-if 'sample_way' not in args:
-    args.sample_way = 0
-train_loader = dataset_TM_train.DATALoader(args.dataname, args.batch_size, args.nb_code, vq_name, unit_length=unit_length, sample_way=args.sample_way)
+
 train_loader_iter = dataset_TM_train.cycle(train_loader)
 
 ##### ---- Training ---- #####
@@ -207,7 +213,13 @@ while nb_iter <= args.total_iter:
     
     batch = next(train_loader_iter)
     clip_text, m_tokens, m_tokens_len = batch
-    m_tokens, m_tokens_len = m_tokens.cuda(), m_tokens_len.cuda()
+    if isinstance(m_tokens_len, list) and len(m_tokens_len) == 2:
+        m_tokens_len, sem_tokens_len = m_tokens_len
+        m_tokens_len, sem_tokens_len = m_tokens_len.cuda(), sem_tokens_len.cuda()
+    else:
+        m_tokens_len = m_tokens_len.cuda()
+        sem_tokens_len = None
+    m_tokens = m_tokens.cuda()
     bs = m_tokens.shape[0]
     target = m_tokens    # (bs, 26)
     target = target.cuda()
@@ -233,12 +245,19 @@ while nb_iter <= args.total_iter:
     cls_pred = cls_pred.contiguous() # torch.Size([128, 51, 513])
 
     loss_cls = 0.0
+    # loss_sem_cls = 0.0
     for i in range(bs):
         # loss function     (26), (26, 513)
-        loss_cls += loss_ce(cls_pred[i][:m_tokens_len[i] + 1], target[i][:m_tokens_len[i] + 1]) / bs
-
-        # Accuracy
-        probs = torch.softmax(cls_pred[i][:m_tokens_len[i] + 1], dim=-1)
+        if sem_tokens_len is None:
+            loss_cls += loss_ce(cls_pred[i][:m_tokens_len[i] + 1], target[i][:m_tokens_len[i] + 1]) / bs
+            # Accuracy
+            probs = torch.softmax(cls_pred[i][:m_tokens_len[i] + 1], dim=-1)
+        else:
+            cls_pred_all = torch.cat([cls_pred[i][:sem_tokens_len[i] + 1], cls_pred[i][semantic_len:m_tokens_len[i] + 1]], dim=-1)
+            target_all = torch.cat([target[i][:sem_tokens_len[i] + 1], target[i][semantic_len:m_tokens_len[i] + 1]], dim=-1)
+            loss_cls += loss_ce(cls_pred_all, target_all) / bs
+            probs = torch.softmax(cls_pred_all, dim=-1)
+        
 
         if args.if_maxtest:
             _, cls_pred_index = torch.max(probs, dim=-1)
@@ -246,7 +265,10 @@ while nb_iter <= args.total_iter:
         else:
             dist = Categorical(probs)
             cls_pred_index = dist.sample()
-        right_num += (cls_pred_index.flatten(0) == target[i][:m_tokens_len[i] + 1].flatten(0)).sum().item()
+        if sem_tokens_len is None:
+            right_num += (cls_pred_index.flatten(0) == target[i][:m_tokens_len[i] + 1].flatten(0)).sum().item()
+        else:
+            right_num += (cls_pred_index.flatten(0) == target_all.flatten(0)).sum().item()
 
     ## global loss
     optimizer.zero_grad()
@@ -255,7 +277,10 @@ while nb_iter <= args.total_iter:
     scheduler.step()
 
     avg_loss_cls = avg_loss_cls + loss_cls.item()
-    nb_sample_train = nb_sample_train + (m_tokens_len + 1).sum().item()
+    if sem_tokens_len is None:
+        nb_sample_train = nb_sample_train + (m_tokens_len + 1).sum().item()
+    else:
+        nb_sample_train = nb_sample_train + (m_tokens_len + 1 + sem_tokens_len + 1).sum().item()
 
     nb_iter += 1
     if nb_iter % args.print_iter ==  0 :
@@ -270,7 +295,7 @@ while nb_iter <= args.total_iter:
         nb_sample_train = 0
 
     if nb_iter % args.eval_iter ==  0:
-        best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model=clip_model, eval_wrapper=eval_wrapper, semantic_flag=(args_vq.lgvq==1))
+        best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model=clip_model, eval_wrapper=eval_wrapper, semantic_flag=(args_vq.lgvq==1 or args.test_nb))
 
     if nb_iter == args.total_iter: 
         msg_final = f"Train. Iter {best_iter} : FID. {best_fid:.5f}, Diversity. {best_div:.4f}, TOP1. {best_top1:.4f}, TOP2. {best_top2:.4f}, TOP3. {best_top3:.4f}"

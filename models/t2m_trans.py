@@ -21,14 +21,15 @@ class Text2Motion_Transformer(nn.Module):
                 dual_head_flag=False,
                 semantic_len=50):
         super().__init__()
-        self.trans_base = CrossCondTransBase(num_vq, embed_dim, clip_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate)
+        
         if dual_head_flag:
+            self.trans_base = CrossCondTransDualBase(num_vq, embed_dim, clip_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate, semantic_len)
             self.trans_head = CrossCondTransDualHead(num_vq, embed_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate, semantic_len)
         else:
             self.trans_head = CrossCondTransHead(num_vq, embed_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate)
+            self.trans_base = CrossCondTransBase(num_vq, embed_dim, clip_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate)
         self.block_size = block_size
         self.num_vq = num_vq
-        # self.reconstruction_flag = 0
         self.semantic_flag = semantic_flag
         self.semantic_interleaved_flag = semantic_interleaved_flag
         self.dual_head_flag = dual_head_flag
