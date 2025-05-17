@@ -59,9 +59,43 @@ class Text2Motion_Transformer(nn.Module):
     def get_block_size(self):
         return self.block_size
 
-    def forward(self, idxs, clip_feature):
-        feat = self.trans_base(idxs, clip_feature)
-        logits = self.trans_head(feat)
+    def forward(self, idxs, clip_feature, semantic_valid_lengths=None):
+        # idxs: (B, T_sequence), contains semantic (potentially padded) and reconstruction tokens
+        # clip_feature: (B, C_clip)
+        # semantic_valid_lengths: (B,), actual length of semantic tokens in idxs for each batch item.
+        # self.semantic_len: max length of the semantic part within idxs.
+
+        B, T_sequence = idxs.shape
+        device = idxs.device
+
+        # 1. Create key_padding_mask for the idxs part based on semantic_valid_lengths
+        # This mask is True for padded semantic tokens, False otherwise (valid semantic, reconstruction).
+        key_padding_mask_for_idxs = torch.zeros_like(idxs, dtype=torch.bool) # Default to False (not masked)
+
+        if semantic_valid_lengths is not None:
+            for i in range(B):
+                valid_sem_len = semantic_valid_lengths[i].item()
+                # Determine the end of the semantic segment within idxs.
+                # This is typically self.semantic_len if idxs is long enough to contain it.
+                # Or it could be T_sequence if idxs is shorter than self.semantic_len.
+                # The padding occurs *within* the first self.semantic_len tokens of idxs.
+                actual_semantic_segment_end = self.semantic_len
+                
+                if valid_sem_len < actual_semantic_segment_end:
+                    # Mask padded semantic tokens: from valid_sem_len to actual_semantic_segment_end
+                    key_padding_mask_for_idxs[i, valid_sem_len:actual_semantic_segment_end] = True
+        
+        # 2. Prepare the final attention mask for the sequence seen by attention layers in trans_head.
+        # This sequence is [condition_embedding, token_embeddings_from_idxs].
+        final_attention_mask_for_trans_head_input = torch.cat([
+            torch.zeros(B, 1, dtype=torch.bool, device=device), # False for condition embedding
+            key_padding_mask_for_idxs
+        ], dim=1)
+
+        # Pass the appropriate masks to trans_base and trans_head
+        feat = self.trans_base(idxs, clip_feature, key_padding_mask=final_attention_mask_for_trans_head_input)
+        logits = self.trans_head(feat, key_padding_mask=final_attention_mask_for_trans_head_input)
+        
         return logits
 
     def sample_dual_head(self, clip_feature, if_categorial=False):
@@ -372,7 +406,7 @@ class CausalCrossConditionalSelfAttention(nn.Module):
         self.register_buffer("mask", torch.tril(torch.ones(block_size, block_size)).view(1, 1, block_size, block_size))
         self.n_head = n_head
 
-    def forward(self, x):
+    def forward(self, x, key_padding_mask=None):
         B, T, C = x.size() 
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
@@ -381,7 +415,17 @@ class CausalCrossConditionalSelfAttention(nn.Module):
         v = self.value(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        # Apply causal mask to ensure attention is only to the left (and current position)
         att = att.masked_fill(self.mask[:,:,:T,:T] == 0, float('-inf'))
+        
+        # Apply key_padding_mask to prevent attention to padded key positions
+        if key_padding_mask is not None:
+            # key_padding_mask has shape (B, T) or (B, T_key) where T_key == T in self-attention
+            # It should be True for positions that are padded and should be masked.
+            # We need to expand it to (B, 1, 1, T) to be broadcastable with att (B, nh, T, T)
+            expanded_key_padding_mask = key_padding_mask.unsqueeze(1).unsqueeze(2) # (B, 1, 1, T)
+            att = att.masked_fill(expanded_key_padding_mask, float('-inf'))
+            
         att = F.softmax(att, dim=-1)
         att = self.attn_drop(att)
         y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
@@ -405,8 +449,8 @@ class Block(nn.Module):
             nn.Dropout(drop_out_rate),
         )
 
-    def forward(self, x):
-        x = x + self.attn(self.ln1(x))
+    def forward(self, x, key_padding_mask=None):
+        x = x + self.attn(self.ln1(x), key_padding_mask=key_padding_mask)
         x = x + self.mlp(self.ln2(x))
         return x
 
@@ -446,7 +490,7 @@ class CrossCondTransBase(nn.Module):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
     
-    def forward(self, idx, clip_feature):
+    def forward(self, idx, clip_feature, key_padding_mask=None):
         if len(idx) == 0:
             token_embeddings = self.cond_emb(clip_feature).unsqueeze(1)
         else:
@@ -480,7 +524,7 @@ class CrossCondTransDualBase(nn.Module):
         self.drop = nn.Dropout(drop_out_rate)
         self.semantic_len = semantic_len
         # transformer block
-        self.blocks = nn.Sequential(*[Block(embed_dim, block_size, n_head, drop_out_rate, fc_rate) for _ in range(num_layers)])
+        self.blocks = nn.ModuleList([Block(embed_dim, block_size, n_head, drop_out_rate, fc_rate) for _ in range(num_layers)])
         self.pos_embed = pos_encoding.PositionEmbedding(block_size, embed_dim, 0.0, False)
 
         self.block_size = block_size
@@ -499,25 +543,50 @@ class CrossCondTransDualBase(nn.Module):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
     
-    def forward(self, idx, clip_feature):
+    def forward(self, idx, clip_feature, key_padding_mask=None):
+        # key_padding_mask (here named key_padding_mask_for_idxs for clarity within this function)
+        # is for `idx` (shape B, T_idx). True for padded positions in idx, especially in the semantic part.
+        key_padding_mask_for_idxs = key_padding_mask 
+
+        condition_embedding = self.cond_emb(clip_feature).unsqueeze(1) # (B, 1, C)
+        mask_for_blocks = None
+
         if len(idx) == 0:
-            token_embeddings = self.cond_emb(clip_feature).unsqueeze(1)
-        elif len(idx) <= self.semantic_len:
-            b, t = idx.size()
-            assert t <= self.block_size, "Cannot forward, model block size is exhausted."
-            token_embeddings = self.tok_emb[0](idx)
-            token_embeddings = torch.cat([self.cond_emb(clip_feature).unsqueeze(1), token_embeddings], dim=1)
+            token_embeddings = condition_embedding
+            # Mask for blocks is just for the condition embedding (i.e., False, do not mask)
+            mask_for_blocks = torch.zeros(condition_embedding.shape[0], 1, dtype=torch.bool, device=condition_embedding.device)
         else:
-            b, t = idx.size()
-            assert t <= self.block_size, "Cannot forward, model block size is exhausted."
-            # forward the Trans model
-            token_sem_embeddings = self.tok_emb[0](idx[..., :self.semantic_len])
-            token_recon_embeddings = self.tok_emb[1](idx[..., self.semantic_len:])
-            token_embeddings = torch.cat([self.cond_emb(clip_feature).unsqueeze(1), token_sem_embeddings, token_recon_embeddings], dim=1)
+            b, t_idx = idx.size()
+            assert t_idx <= self.block_size, f"Cannot forward, idx sequence length {t_idx} exceeds model block size {self.block_size}."
+
+            # Prepare token embeddings from idx based on whether it's semantic, reconstruction, or both
+            if t_idx <= self.semantic_len : # Only semantic tokens (or shorter than self.semantic_len)
+                token_embeddings_unconditioned = self.tok_emb[0](idx)
+            else: # Both semantic and reconstruction tokens
+                token_sem_embeddings = self.tok_emb[0](idx[..., :self.semantic_len])
+                token_recon_embeddings = self.tok_emb[1](idx[..., self.semantic_len:t_idx]) # Slice up to t_idx
+                token_embeddings_unconditioned = torch.cat([token_sem_embeddings, token_recon_embeddings], dim=1)
+            
+            token_embeddings = torch.cat([condition_embedding, token_embeddings_unconditioned], dim=1)
+            
+            # Adjust key_padding_mask_for_idxs for the prepended condition embedding
+            if key_padding_mask_for_idxs is not None:
+                # Ensure key_padding_mask_for_idxs matches the length of idx used for embeddings
+                key_padding_mask_for_idxs = key_padding_mask_for_idxs[:, :t_idx + 1]
+                # mask_for_blocks = torch.cat([
+                #     # torch.zeros(b, 1, dtype=torch.bool, device=idx.device), # False for condition
+                #     key_padding_mask_for_idxs[:, :t_idx] # Use mask corresponding to actual idx length
+                # ], dim=1)
+            else:
+                # If no original mask, then no padding for any part of the sequence passed to blocks (beyond causal)
+                # Create a mask of all Falses for the blocks if none provided.
+                mask_for_blocks = torch.zeros(token_embeddings.shape[0], token_embeddings.shape[1], dtype=torch.bool, device=idx.device)
             
         x = self.pos_embed(token_embeddings)
-        x = self.blocks(x)
-
+        
+        for block in self.blocks:
+            x = block(x, key_padding_mask=mask_for_blocks) # Pass the adjusted mask
+            
         return x
 
 
@@ -572,10 +641,10 @@ class CrossCondTransDualHead(nn.Module):
                 semantic_len = 50):
         super().__init__()
 
-        self.blocks = nn.Sequential(*[Block(embed_dim, block_size, n_head, drop_out_rate, fc_rate) for _ in range(num_layers)])
+        self.blocks = nn.ModuleList([Block(embed_dim, block_size, n_head, drop_out_rate, fc_rate) for _ in range(num_layers)])
         self.ln_f = nn.ModuleList([nn.LayerNorm(embed_dim) for _ in range(2)])
-        self.sem_heads = nn.Linear(embed_dim, num_vq + 2, bias=False)
-        self.recon_heads = nn.Linear(embed_dim, num_vq + 2, bias=False)
+        self.sem_heads = nn.Linear(embed_dim, num_vq + 1, bias=False)
+        self.recon_heads = nn.Linear(embed_dim, num_vq + 1, bias=False)
         self.semantic_len = semantic_len
         self.num_vq = num_vq
         # self.ln_f = nn.LayerNorm(embed_dim)
@@ -596,15 +665,49 @@ class CrossCondTransDualHead(nn.Module):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
 
-    def forward(self, x):
-        x = self.blocks(x)
-        x_semantic = x[:, :self.semantic_len, :]
-        x_recon = x[:, self.semantic_len:, :]
-        x_semantic = self.ln_f[0](x_semantic)
-        x_recon = self.ln_f[1](x_recon)
-        logits_semantic = self.sem_heads(x_semantic)
-        logits_recon = self.recon_heads(x_recon)
-        logits_recon[..., self.num_vq + 1] = 0.0
+    def forward(self, x, key_padding_mask=None):
+        # x is the output from TransBase (Dual), includes condition embedding.
+        # key_padding_mask is also for x (i.e., includes a False for the condition part at the beginning).
+        # We call this key_padding_mask_for_input_x for clarity within this function.
+        key_padding_mask_for_input_x = key_padding_mask
+
+        for block in self.blocks:
+            x = block(x, key_padding_mask=key_padding_mask_for_input_x) # Pass the mask to each block
+
+        # The input x has shape (B, 1 + T_idx, C) due to condition embedding.
+        # T_idx is the original length of idx tokens (semantic + reconstruction).
+        # self.semantic_len is the length of semantic part in *original idxs*.
+        
+        # Slicing for semantic and reconstruction parts after blocks:
+        # Semantic part in x (after condition): x[:, 1 : 1 + self.semantic_len, :]
+        # Reconstruction part in x (after condition and semantic): x[:, 1 + self.semantic_len :, :]
+
+        # Note: The slicing here assumes x's length is at least 1 + self.semantic_len for the semantic part,
+        # and potentially longer for the reconstruction part.
+        # If x is shorter, e.g., during early generation steps, these slices might be empty or out of bounds.
+        # The lengths should be handled carefully based on actual sequence length of x.
+        # current_seq_len_after_cond = x.shape[1]
+
+        # Determine the end index for the semantic part in x
+        # It's 1 (for condition) + length of semantic tokens in x
+        # Max length of semantic tokens in x is self.semantic_len
+        # Actual length of semantic tokens in x is min(self.semantic_len, current_seq_len_after_cond)
+        # semantic_part_end_in_x = 1 + min(self.semantic_len, current_seq_len_after_cond)
+        
+        x_semantic_part = x[:, :self.semantic_len, :]
+        x_recon_part = x[:, self.semantic_len:, :] # Takes the rest
+        
+        logits_semantic = torch.empty(x.shape[0], 0, self.sem_heads.out_features, device=x.device)
+        if x_semantic_part.shape[1] > 0:
+            x_semantic_out = self.ln_f[0](x_semantic_part)
+            logits_semantic = self.sem_heads(x_semantic_out)
+        
+        logits_recon = torch.empty(x.shape[0], 0, self.recon_heads.out_features, device=x.device)
+        if x_recon_part.shape[1] > 0:
+            x_recon_out = self.ln_f[1](x_recon_part)
+            logits_recon = self.recon_heads(x_recon_out)
+        
+        # The logits should correspond to the positions *after* the condition token.
         logits_result = torch.cat([logits_semantic, logits_recon], dim=1)
         return logits_result
 

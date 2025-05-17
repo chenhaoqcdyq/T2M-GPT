@@ -243,8 +243,10 @@ while nb_iter <= args.total_iter:
     mask = mask.round().to(dtype=torch.int64) # torch.Size([128, 50])
     r_indices = torch.randint_like(input_index, args.nb_code)
     a_indices = mask*input_index+(1-mask)*r_indices
-
-    cls_pred = trans_encoder(a_indices, feat_clip_text) # torch.Size([128, 50]), torch.Size([128, 512])
+    if sem_tokens_len is not None:
+        cls_pred = trans_encoder(a_indices, feat_clip_text, semantic_valid_lengths=sem_tokens_len) # torch.Size([128, 50]), torch.Size([128, 512])
+    else:
+        cls_pred = trans_encoder(a_indices, feat_clip_text) # torch.Size([128, 50]), torch.Size([128, 512])
     cls_pred = cls_pred.contiguous() # torch.Size([128, 51, 513])
 
     loss_cls = 0.0
@@ -256,8 +258,10 @@ while nb_iter <= args.total_iter:
             # Accuracy
             probs = torch.softmax(cls_pred[i][:m_tokens_len[i] + 1], dim=-1)
         else:
-            loss_cls += loss_ce(cls_pred[i][:semantic_len + m_tokens_len[i] + 1], target[i][:semantic_len + m_tokens_len[i] + 1]) / bs
-            probs = torch.softmax(cls_pred[i][:semantic_len + m_tokens_len[i] + 1], dim=-1)
+            pred_all = torch.cat([cls_pred[i][:sem_tokens_len[i] + 1], cls_pred[i][semantic_len:semantic_len + m_tokens_len[i] + 1]], dim=0)
+            target_all = torch.cat([target[i][:sem_tokens_len[i] + 1], target[i][semantic_len:semantic_len + m_tokens_len[i] + 1]], dim=0)
+            loss_cls += loss_ce(pred_all, target_all) / bs
+            probs = torch.softmax(pred_all, dim=-1)
         
 
         if args.if_maxtest:
@@ -269,7 +273,7 @@ while nb_iter <= args.total_iter:
         if sem_tokens_len is None:
             right_num += (cls_pred_index.flatten(0) == target[i][:m_tokens_len[i] + 1].flatten(0)).sum().item()
         else:
-            right_num += (cls_pred_index.flatten(0) == target[i][:semantic_len + m_tokens_len[i] + 1].flatten(0)).sum().item()
+            right_num += (cls_pred_index.flatten(0) == target_all.flatten(0)).sum().item()
 
     ## global loss
     optimizer.zero_grad()
@@ -281,7 +285,7 @@ while nb_iter <= args.total_iter:
     if sem_tokens_len is None:
         nb_sample_train = nb_sample_train + (m_tokens_len + 1).sum().item()
     else:
-        nb_sample_train = nb_sample_train + (semantic_len + m_tokens_len + 1).sum().item()
+        nb_sample_train = nb_sample_train + (sem_tokens_len + 1 + m_tokens_len + 1).sum().item()
 
     nb_iter += 1
     if nb_iter % args.print_iter ==  0 :
