@@ -574,7 +574,8 @@ class CrossCondTransDualHead(nn.Module):
 
         self.blocks = nn.Sequential(*[Block(embed_dim, block_size, n_head, drop_out_rate, fc_rate) for _ in range(num_layers)])
         self.ln_f = nn.ModuleList([nn.LayerNorm(embed_dim) for _ in range(2)])
-        self.heads = nn.ModuleList([nn.Linear(embed_dim, num_vq + 1, bias=False) for _ in range(2)])
+        self.sem_heads = nn.Linear(embed_dim, num_vq + 2, bias=False)
+        self.recon_heads = nn.Linear(embed_dim, num_vq + 1, bias=False)
         self.semantic_len = semantic_len
         # self.ln_f = nn.LayerNorm(embed_dim)
         # self.head = nn.Linear(embed_dim, num_vq + 1, bias=False)
@@ -600,8 +601,8 @@ class CrossCondTransDualHead(nn.Module):
         x_recon = x[:, self.semantic_len:, :]
         x_semantic = self.ln_f[0](x_semantic)
         x_recon = self.ln_f[1](x_recon)
-        logits_semantic = self.heads[0](x_semantic)
-        logits_recon = self.heads[1](x_recon)
+        logits_semantic = self.sem_heads(x_semantic)
+        logits_recon = self.recon_heads(x_recon)
         logits_result = torch.cat([logits_semantic, logits_recon], dim=1)
         return logits_result
 
