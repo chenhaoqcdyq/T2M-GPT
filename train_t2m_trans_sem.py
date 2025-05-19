@@ -166,8 +166,9 @@ for batch in tqdm(train_loader_token):
     #             continue
     #     else:
     #         continue
-    if os.path.exists(pjoin(args.vq_dir, name[0] +'.npz')):
-        continue
+    if args.exp_name == 'GPT':
+        if os.path.exists(pjoin(args.vq_dir, name[0] +'.npz')):
+            continue
     bs, seq = pose.shape[0], pose.shape[1]
 
     pose = pose.cuda().float() # bs, nb_joints, joints_dim, seq_len (1,124,263)
@@ -210,7 +211,7 @@ else:
 train_loader_iter = dataset_TM_train.cycle(train_loader)
 
 ##### ---- Training ---- #####
-# best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, clip_model=clip_model, eval_wrapper=eval_wrapper, semantic_flag=args_vq.lgvq)
+# best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer_batch(args.out_dir, val_loader, net, trans_encoder, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, clip_model=clip_model, eval_wrapper=eval_wrapper, semantic_flag=((args_vq.lgvq==1 or args.test_nb) and args.sample_way != 2), draw=False, dual_head_flag=(args.sample_way == 2))
 best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching = 1000, 0, 100, 0, 0, 0, 100
 while nb_iter <= args.total_iter:
     
@@ -300,7 +301,7 @@ while nb_iter <= args.total_iter:
         nb_sample_train = 0
 
     if nb_iter % args.eval_iter ==  0:
-        best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer(args.out_dir, val_loader, net, trans_encoder, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model=clip_model, eval_wrapper=eval_wrapper, semantic_flag=((args_vq.lgvq==1 or args.test_nb) and args.sample_way != 2), draw=False, dual_head_flag=(args.sample_way == 2))
+        best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer_batch(args.out_dir, val_loader, net, trans_encoder, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model=clip_model, eval_wrapper=eval_wrapper, semantic_flag=((args_vq.lgvq==1 or args.test_nb) and args.sample_way != 2), draw=False, dual_head_flag=(args.sample_way == 2))
 
     if nb_iter == args.total_iter: 
         msg_final = f"Train. Iter {best_iter} : FID. {best_fid:.5f}, Diversity. {best_div:.4f}, TOP1. {best_top1:.4f}, TOP2. {best_top2:.4f}, TOP3. {best_top3:.4f}"

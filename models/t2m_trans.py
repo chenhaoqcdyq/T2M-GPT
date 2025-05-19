@@ -100,9 +100,16 @@ class Text2Motion_Transformer(nn.Module):
 
     def sample_dual_head(self, clip_feature, if_categorial=False):
         B = clip_feature.shape[0]
+        device = clip_feature.device
         xs = None 
-        # semantic_content_has_ended_flags[i] is True if self.num_vq was sampled in semantic phase for batch item i
-        semantic_content_has_ended_flags = torch.zeros(B, dtype=torch.bool, device=clip_feature.device)
+        
+        # semantic_content_has_ended_flags[i] is True if self.num_vq was sampled (signaling end of semantic data)
+        # for batch item i, leading to subsequent actual padding tokens (self.num_vq + 1).
+        semantic_content_has_ended_flags = torch.zeros(B, dtype=torch.bool, device=device)
+        
+        # Stores the actual length of semantic tokens before any (self.num_vq + 1) padding started.
+        # Initialized to self.semantic_len, assuming full semantic part unless ended early.
+        actual_semantic_tokens_count = torch.full((B,), self.semantic_len, dtype=torch.long, device=device)
 
         for _ in range(self.block_size): 
             current_len = xs.shape[1] if xs is not None else 0
@@ -110,13 +117,23 @@ class Text2Motion_Transformer(nn.Module):
             if current_len >= self.block_size:
                 break
 
-            current_input_for_transformer = xs if xs is not None else []
+            current_input_for_transformer = xs 
+            if current_input_for_transformer is None:
+                 current_input_for_transformer = torch.empty(B, 0, dtype=torch.long, device=device)
             
-            logits = self.forward(current_input_for_transformer, clip_feature)
+            # Determine semantic_valid_lengths for the forward pass.
+            # Only pass it if current_len is sufficient for the forward method's masking logic to apply.
+            fwd_semantic_valid_lengths = None
+            if current_len >= self.semantic_len:
+                # Pass the actual semantic token counts. forward will use this to mask
+                # padding tokens (self.num_vq + 1) that might be within the first self.semantic_len block of xs.
+                fwd_semantic_valid_lengths = actual_semantic_tokens_count.clone()
+            
+            logits = self.forward(current_input_for_transformer, clip_feature, semantic_valid_lengths=fwd_semantic_valid_lengths)
             logits = logits[:, -1, :] 
             probs = F.softmax(logits, dim=-1) # (B, V)
 
-            next_step_tokens_for_batch = torch.zeros(B, dtype=torch.long, device=clip_feature.device)
+            next_step_tokens_for_batch = torch.zeros(B, dtype=torch.long, device=device)
 
             if current_len < self.semantic_len: # Processing semantic part
                 candidate_tokens_this_step = None # Shape (B,)
@@ -129,18 +146,28 @@ class Text2Motion_Transformer(nn.Module):
 
                 for i in range(B):
                     if semantic_content_has_ended_flags[i]:
-                        # Semantic content for this item ended, force padding (self.num_vq)
+                        # Semantic content for this item ended, force padding (self.num_vq + 1)
                         next_step_tokens_for_batch[i] = self.num_vq + 1
                     else:
                         token_for_item_i = candidate_tokens_this_step[i]
-                        if token_for_item_i == self.num_vq: # First time self.num_vq in semantic part
+                        if token_for_item_i == self.num_vq: # Sampled self.num_vq, signaling end of true semantic content
                             semantic_content_has_ended_flags[i] = True 
-                        next_step_tokens_for_batch[i] = token_for_item_i
+                            actual_semantic_tokens_count[i] = current_len # True semantic data length is current_len
+                            next_step_tokens_for_batch[i] = self.num_vq # Start padding from now on
+                        else: # Regular semantic token
+                            next_step_tokens_for_batch[i] = token_for_item_i
                 
                 idx_sampled_token_tensor = next_step_tokens_for_batch.unsqueeze(-1) # (B,1)
 
             else: # Processing reconstruction part (current_len >= self.semantic_len)
-                # self.num_vq is true stop. Follows sample_original_backup style for batch stop.
+                # Ensure flags and counts are accurate for items that filled self.semantic_len without an explicit stop signal
+                for i in range(B):
+                    if not semantic_content_has_ended_flags[i]:
+                        semantic_content_has_ended_flags[i] = True
+                        # actual_semantic_tokens_count[i] remains self.semantic_len (its initial value)
+                        # if it reached here without semantic_content_has_ended_flags[i] being True.
+
+                # Original sampling logic for reconstruction part:
                 idx_sampled_token_tensor = None 
                 if if_categorial:
                     dist = Categorical(probs)
@@ -387,6 +414,89 @@ class Text2Motion_Transformer(nn.Module):
             return self.sample_dual_head(clip_feature, if_categorial)
         else:
             return self.sample_original_backup(clip_feature, if_categorial)
+
+    def sample_batch(self, clip_feature, if_categorial=False):
+        B = clip_feature.shape[0]
+        device = clip_feature.device
+        xs = torch.empty((B, 0), dtype=torch.long, device=device)
+        all_sequences_finished = torch.zeros(B, dtype=torch.bool, device=device)
+
+        if self.dual_head_flag:
+            semantic_phase_ended_flags = torch.zeros(B, dtype=torch.bool, device=device)
+            # actual_semantic_lengths stores the true length of semantic content for each item.
+            # Initialized to self.semantic_len, assuming full semantic part unless ended early by EOS signal.
+            actual_semantic_lengths = torch.full((B,), self.semantic_len, dtype=torch.long, device=device)
+            currently_in_semantic_phase = torch.ones(B, dtype=torch.bool, device=device)
+        
+        for loop_idx in range(self.block_size):
+            if all_sequences_finished.all():
+                break
+            
+            current_len = xs.shape[1] # Length of sequences before adding current step's tokens
+            
+            fwd_semantic_valid_lengths = None
+            if self.dual_head_flag:
+                # Pass the current known actual semantic lengths.
+                # The forward function will use this to mask padding tokens within the semantic block of xs.
+                fwd_semantic_valid_lengths = actual_semantic_lengths.clone()
+
+            # current_input_for_transformer is xs. If xs is (B,0), forward handles it.
+            logits = self.forward(xs, clip_feature, semantic_valid_lengths=fwd_semantic_valid_lengths)
+            # Get logits for the next token prediction
+            probs = F.softmax(logits[:, -1, :], dim=-1) 
+            
+            candidate_tokens = None
+            if if_categorial:
+                dist = Categorical(probs) # Probs: (B, V)
+                candidate_tokens = dist.sample() # Cand: (B,)
+            else:
+                _, candidate_tokens_topk = torch.topk(probs, k=1, dim=-1) # Cand_topk: (B, 1)
+                candidate_tokens = candidate_tokens_topk.squeeze(-1) # Cand: (B,)
+                
+            step_tokens = torch.zeros(B, dtype=torch.long, device=device)
+
+            for i in range(B):
+                if all_sequences_finished[i]:
+                    step_tokens[i] = self.num_vq + 1 # PAD token
+                    continue
+
+                token_i = candidate_tokens[i]
+                
+                if self.dual_head_flag:
+                    if currently_in_semantic_phase[i]:
+                        if semantic_phase_ended_flags[i]: # Semantic part already processed (either by EOS or filled len), PAD
+                            step_tokens[i] = self.num_vq + 1
+                        else: # Actively sampling/deciding for semantic part
+                            if token_i == self.num_vq: # Semantic EOS signal encountered
+                                semantic_phase_ended_flags[i] = True
+                                actual_semantic_lengths[i] = current_len # Record true semantic length before this EOS
+                                step_tokens[i] = self.num_vq + 1 # Append PAD token immediately
+                            else:
+                                step_tokens[i] = token_i
+                        
+                        # Check for phase transition due to length:
+                        # If, after appending this step's token, length becomes self.semantic_len
+                        if (current_len + 1) == self.semantic_len:
+                            currently_in_semantic_phase[i] = False # Switch phase for the *next* iteration
+                            if not semantic_phase_ended_flags[i]: # If not already ended by an EOS signal
+                                semantic_phase_ended_flags[i] = True # Mark semantic part as filled
+                                # actual_semantic_lengths[i] remains self.semantic_len (default or already set if EOS earlier)
+                    else: # Reconstruction phase for item i
+                        if token_i == self.num_vq: # Reconstruction EOS
+                            step_tokens[i] = self.num_vq # Append the actual EOS token
+                            all_sequences_finished[i] = True
+                        else:
+                            step_tokens[i] = token_i
+                else: # Original backup logic (not dual_head_flag)
+                    if token_i == self.num_vq: # EOS
+                        step_tokens[i] = self.num_vq
+                        all_sequences_finished[i] = True
+                    else:
+                        step_tokens[i] = token_i
+            
+            xs = torch.cat((xs, step_tokens.unsqueeze(-1)), dim=1)
+            
+        return xs
 
 class CausalCrossConditionalSelfAttention(nn.Module):
 
