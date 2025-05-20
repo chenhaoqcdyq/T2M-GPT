@@ -69,5 +69,6 @@ def get_args_parser():
     parser.add_argument('--down_sample', default=0, type=int, help='down sample')
     parser.add_argument('--sample_way', default=0, type=int, help='sample way')
     parser.add_argument('--test_nb', default=0, type=int, help='test nb')
+    parser.add_argument('--classfg', default=0, type=float, help='use motion prior')
     
     return parser.parse_args()

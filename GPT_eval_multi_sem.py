@@ -87,23 +87,40 @@ json_file = os.path.join(trans_path, 'train_config.json')
 with open(json_file, 'r') as f:
     train_args_dict = json.load(f)  # dict
 args_trans = eval_trans.EasyDict(train_args_dict) 
-if args_vq.lgvq:
-    num_vq_trans = args_vq.nb_code * 2 + 1
+if args_vq.lgvq == 1 and args.sample_way != 2:
+    num_vq_trans = args.nb_code * 2 + 1
+elif args_vq.lgvq == 1 and args.sample_way == 2:
+    num_vq_trans = args.nb_code
 else:
-    num_vq_trans = args_vq.nb_code
+    num_vq_trans = args.nb_code
+# 测试codebook的size是否能够对生成进行提点
+if args.test_nb:
+    num_vq_trans = args.nb_code * 2 + 1
 if args_vq.lgvq == 1 and args.sample_way == 0:
     semantic_flag = True
 else:
     semantic_flag = False
+if "down_vqvae" in args_vq:
+    if args_vq.down_vqvae and args_vq.down_t == 2:
+        unit_length = 4
+    elif args_vq.down_vqvae and args_vq.down_t == 1:
+        unit_length = 2
+    else:
+        unit_length = 1
+else:
+    unit_length = 1
+semantic_len = ((196 // unit_length) + 3) // 4 + 1
 trans_encoder = trans.Text2Motion_Transformer(num_vq=num_vq_trans, 
-                                embed_dim=args_trans.embed_dim_gpt, 
-                                clip_dim=args_trans.clip_dim, 
-                                block_size=args_trans.block_size, 
-                                num_layers=args_trans.num_layers, 
-                                n_head=args_trans.n_head_gpt, 
-                                drop_out_rate=args_trans.drop_out_rate, 
-                                fc_rate=args_trans.ff_rate,
-                                semantic_flag=semantic_flag)
+                                embed_dim=args.embed_dim_gpt, 
+                                clip_dim=args.clip_dim, 
+                                block_size=args.block_size, 
+                                num_layers=args.num_layers, 
+                                n_head=args.n_head_gpt, 
+                                drop_out_rate=args.drop_out_rate, 
+                                fc_rate=args.ff_rate,
+                                semantic_flag=semantic_flag,
+                                semantic_len=semantic_len,
+                                dual_head_flag=(args.sample_way == 2))
 
 
 print ('loading checkpoint from {}'.format(args.resume_pth))
@@ -131,10 +148,7 @@ repeat_time = 20
 
         
 for i in range(repeat_time):
-    best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, best_multi, writer, logger \
-        = eval_trans.evaluation_transformer_test(args.out_dir, val_loader, net, trans_encoder, logger, writer, 0, \
-            best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, \
-                best_multi=0, clip_model=clip_model, eval_wrapper=eval_wrapper, draw=False, savegif=False, save=False, savenpy=(i==0), semantic_flag=args_vq.lgvq, dual_head_flag=(args.sample_way == 2))
+    best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, best_multi, writer, logger = eval_trans.evaluation_transformer_test_batch(args.out_dir, val_loader, net, trans_encoder, logger, writer, 0,  best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, best_multi=0, clip_model=clip_model, eval_wrapper=eval_wrapper, draw=False, savegif=False, save=False, savenpy=False, dual_head_flag=(args.sample_way == 2), skip_mmod=True)
     fid.append(best_fid)
     div.append(best_div)
     top1.append(best_top1)

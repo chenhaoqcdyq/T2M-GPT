@@ -748,6 +748,187 @@ def evaluation_transformer_test(out_dir, val_loader, net, trans, logger, writer,
     trans.train()
     return fid, best_iter, diversity, R_precision[0], R_precision[1], R_precision[2], matching_score_pred, multimodality, writer, logger
 
+@torch.no_grad()
+def evaluation_transformer_test_batch(out_dir, val_loader, net, trans, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, best_multi, clip_model, eval_wrapper, draw = True, save = True, savegif=False, savenpy=False, mmod_gen_times=30, skip_mmod=False, dual_head_flag=False):
+
+    trans.eval()
+
+    if skip_mmod:
+        mmod_gen_times = 1
+
+    nb_sample = 0
+
+    draw_org = []
+    draw_pred = []
+    draw_text = []
+    draw_text_pred = []
+    draw_name = []
+
+    motion_annotation_list = []
+    motion_pred_list = []
+    motion_multimodality = []
+    R_precision_real = 0
+    R_precision = 0
+    matching_score_real = 0
+    matching_score_pred = 0
+
+    nb_sample = 0
+
+    for batch in tqdm(val_loader):
+
+        word_embeddings, pos_one_hots, clip_text, sent_len, pose, m_length, token, name = batch
+        bs, seq = pose.shape[:2]
+        num_joints = 21 if pose.shape[-1] == 251 else 22
+
+        text = clip.tokenize(clip_text, truncate=True).cuda()
+
+        feat_clip_text = clip_model.encode_text(text).float()
+        motion_multimodality_batch = []
+        for i in range(mmod_gen_times):  # mmod_gen_times default: 30
+            pred_pose_eval = torch.zeros((bs, seq, pose.shape[-1])).cuda()
+            pred_len = torch.ones(bs).long()
+
+            # [Text-to-motion Generation] get generated parts' token sequence
+            # get parts_index_motion given the feat_clip_text
+            batch_parts_index_motion = trans.sample_batch(feat_clip_text, False)  # List: [(B, seq_len), ..., (B, seq_len)]
+            if dual_head_flag:
+                batch_parts_index_motion = batch_parts_index_motion[..., trans.semantic_len:]
+
+            max_motion_seq_len = batch_parts_index_motion.shape[1]
+
+
+            for k in range(bs):
+
+                min_motion_seq_len = max_motion_seq_len
+                # parts_index_motion = []
+                # for part_index, name in zip(batch_parts_index_motion, ['Root', 'R_Leg', 'L_Leg', 'Backbone', 'R_Arm', 'L_Arm']):
+
+                # get one sample
+                part_index = batch_parts_index_motion[k:k+1]  # (1, seq_len)
+
+                # find the earliest end token position
+                idx = torch.nonzero(part_index == trans.num_vq)
+
+                # # Debug
+                # print('part_index:', part_index)
+                # print('nonzero_idx', idx)
+
+                if idx.numel() == 0:
+                    motion_seq_len = max_motion_seq_len
+                else:
+                    min_end_idx = idx[:,1].min()
+                    motion_seq_len = min_end_idx
+
+                # if motion_seq_len < min_motion_seq_len:
+                min_motion_seq_len = motion_seq_len
+
+                # parts_index_motion.append(part_index)
+
+                # Truncate
+                # for j in range(len(parts_index_motion)):
+                if min_motion_seq_len == 0:
+                    parts_index_motion = torch.ones(1,4).cuda().long()  # (B, seq_len) B==1, seq_len==1
+                elif min_motion_seq_len <= 3:
+                    # assign a nonsense motion index to handle length is 0 issue.
+                    parts_index_motion = torch.cat([part_index[:,:min_motion_seq_len], torch.ones(1,4-min_motion_seq_len).cuda().long()], dim=1)
+                else:
+                    parts_index_motion = part_index[:,:min_motion_seq_len]
+
+
+
+                # [Token-to-RawMotion with VQ-VAE decoder] get each parts' raw motion
+                parts_pred_pose = net.forward_decoder(parts_index_motion)  # (B, pred_nframes, parts_sk_dim)
+                #   todo: support different shared_joint_rec_mode in the parts2whole function
+                # pred_pose = val_loader.dataset.parts2whole(parts_pred_pose, mode=val_loader.dataset.dataset_name)  # (B, pred_nframes, raw_motion_dim)
+                pred_pose = parts_pred_pose
+                cur_len = pred_pose.shape[1]
+
+                pred_len[k] = min(cur_len, seq)
+                pred_pose_eval[k:k+1, :cur_len] = pred_pose[:, :seq]
+
+                if i == 0 and (draw or savenpy):
+                    pred_denorm = val_loader.dataset.inv_transform(pred_pose.detach().cpu().numpy())
+                    pred_xyz = recover_from_ric(torch.from_numpy(pred_denorm).float().cuda(), num_joints)
+
+                    if savenpy:
+                        np.save(os.path.join(out_dir, name[k]+'_pred.npy'), pred_xyz.detach().cpu().numpy())
+
+                    if draw:
+                        if i == 0:
+                            draw_pred.append(pred_xyz)
+                            draw_text_pred.append(clip_text[k])
+                            draw_name.append(name[k])
+
+            et_pred, em_pred = eval_wrapper.get_co_embeddings(word_embeddings, pos_one_hots, sent_len, pred_pose_eval, pred_len)
+
+            motion_multimodality_batch.append(em_pred.reshape(bs, 1, -1))
+
+            if i == 0:
+                pose = pose.cuda().float()
+
+                et, em = eval_wrapper.get_co_embeddings(word_embeddings, pos_one_hots, sent_len, pose, m_length)
+                motion_annotation_list.append(em)
+                motion_pred_list.append(em_pred)
+
+                if draw or savenpy:
+                    pose = val_loader.dataset.inv_transform(pose.detach().cpu().numpy())
+                    pose_xyz = recover_from_ric(torch.from_numpy(pose).float().cuda(), num_joints)
+
+                    if savenpy:
+                        for j in range(bs):
+                            np.save(os.path.join(out_dir, name[j]+'_gt.npy'), pose_xyz[j][:m_length[j]].unsqueeze(0).cpu().numpy())
+
+                    if draw:
+                        for j in range(bs):
+                            draw_org.append(pose_xyz[j][:m_length[j]].unsqueeze(0))
+                            draw_text.append(clip_text[j])
+
+                temp_R, temp_match = calculate_R_precision(et.cpu().numpy(), em.cpu().numpy(), top_k=3, sum_all=True)
+                R_precision_real += temp_R
+                matching_score_real += temp_match
+                temp_R, temp_match = calculate_R_precision(et_pred.cpu().numpy(), em_pred.cpu().numpy(), top_k=3, sum_all=True)
+                R_precision += temp_R
+                matching_score_pred += temp_match
+
+                nb_sample += bs
+
+        motion_multimodality.append(torch.cat(motion_multimodality_batch, dim=1))
+
+    motion_annotation_np = torch.cat(motion_annotation_list, dim=0).cpu().numpy()
+    motion_pred_np = torch.cat(motion_pred_list, dim=0).cpu().numpy()
+    gt_mu, gt_cov  = calculate_activation_statistics(motion_annotation_np)
+    mu, cov= calculate_activation_statistics(motion_pred_np)
+
+    diversity_real = calculate_diversity(motion_annotation_np, 300 if nb_sample > 300 else 100)
+    diversity = calculate_diversity(motion_pred_np, 300 if nb_sample > 300 else 100)
+
+    R_precision_real = R_precision_real / nb_sample
+    R_precision = R_precision / nb_sample
+
+    matching_score_real = matching_score_real / nb_sample
+    matching_score_pred = matching_score_pred / nb_sample
+
+    multimodality = 0
+    if not skip_mmod:
+        print('Calculate multimodality...')
+        motion_multimodality = torch.cat(motion_multimodality, dim=0).cpu().numpy()
+        multimodality = calculate_multimodality(motion_multimodality, 10)
+
+    fid = calculate_frechet_distance(gt_mu, gt_cov, mu, cov)
+
+    msg = f"--> \t Eva. Iter {nb_iter} :, FID. {fid:.4f}, Diversity Real. {diversity_real:.4f}, Diversity. {diversity:.4f}, R_precision_real. {R_precision_real}, R_precision. {R_precision}, matching_score_real. {matching_score_real}, matching_score_pred. {matching_score_pred}, multimodality. {multimodality:.4f}"
+    logger.info(msg)
+
+
+    if draw:
+        for ii in range(len(draw_org)):
+            tensorborad_add_video_xyz(writer, draw_org[ii], nb_iter, tag='./Vis/'+draw_name[ii]+'_org', nb_vis=1, title_batch=[draw_text[ii]], outname=[os.path.join(out_dir, draw_name[ii]+'_skel_gt.gif')] if savegif else None)
+
+            tensorborad_add_video_xyz(writer, draw_pred[ii], nb_iter, tag='./Vis/'+draw_name[ii]+'_pred', nb_vis=1, title_batch=[draw_text_pred[ii]], outname=[os.path.join(out_dir, draw_name[ii]+'_skel_pred.gif')] if savegif else None)
+
+    trans.train()
+    return fid, best_iter, diversity, R_precision[0], R_precision[1], R_precision[2], matching_score_pred, multimodality, writer, logger
+
 # (X - X_train)*(X - X_train) = -2X*X_train + X*X + X_train*X_train
 def euclidean_distance_matrix(matrix1, matrix2):
     """
