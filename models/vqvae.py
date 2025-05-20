@@ -185,4 +185,105 @@ class HumanVQVAE(nn.Module):
     def text_motion_topk(self, motion, text, text_mask=None, motion_mask=None, topk=5):
         return self.vqvae.text_motion_topk(motion, text, text_mask, motion_mask, topk)
 
+import torch.nn as nn
+from models.encdec import Encoder, Decoder
+from models.vq.residual_vq import ResidualVQ
+    
+class RVQVAE(nn.Module):
+    def __init__(self,
+                 args,
+                 input_width=263,
+                 nb_code=1024,
+                 code_dim=512,
+                 output_emb_width=512,
+                 down_t=3,
+                 stride_t=2,
+                 width=512,
+                 depth=3,
+                 dilation_growth_rate=3,
+                 activation='relu',
+                 norm=None,
+                #  lgvq=0,
+                 causal=True):
 
+        super().__init__()
+        assert output_emb_width == code_dim
+        self.args = args
+        self.code_dim = code_dim
+        self.num_code = nb_code
+        if args.down_vqvae == 1:
+            self.encoder = Encoder(input_width, output_emb_width, down_t, stride_t, width, depth,
+                                dilation_growth_rate, activation=activation, norm=norm, causal=causal)
+            self.decoder = Decoder(input_width, output_emb_width, down_t, stride_t, width, depth,
+                                dilation_growth_rate, activation=activation, norm=norm)
+        else:
+            self.encoder = Encoder(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, 1, width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=causal)
+            self.decoder = Decoder_wo_upsample(251 if args.dataname == 'kit' else 263, output_emb_width, down_t, stride_t, width, depth, dilation_growth_rate, activation=activation, norm=norm)
+        rvqvae_config = {
+            'num_quantizers': args.num_quantizers,
+            'shared_codebook': args.shared_codebook,
+            'quantize_dropout_prob': args.quantize_dropout_prob,
+            'quantize_dropout_cutoff_index': 0,
+            'nb_code': nb_code,
+            'code_dim':code_dim, 
+            'args': args,
+        }
+        self.quantizer = ResidualVQ(**rvqvae_config)
+        
+        if self.args.lgvq == 1:
+            self.lgvq_encoder = Dualsem_encoderv3(args, d_model=output_emb_width, num_layers=2, down_sample=args.down_sample if 'down_sample' in args else 0)
+
+    def preprocess(self, x):
+        # (bs, T, Jx3) -> (bs, Jx3, T)
+        x = x.permute(0, 2, 1).float()
+        return x
+
+    def postprocess(self, x):
+        # (bs, Jx3, T) ->  (bs, T, Jx3)
+        x = x.permute(0, 2, 1)
+        return x
+
+    def encode(self, x):
+        N, T, _ = x.shape
+        x_in = self.preprocess(x)
+        x_encoder = self.encoder(x_in)
+        # print(x_encoder.shape)
+        code_idx, all_codes = self.quantizer.quantize(x_encoder, return_latent=True)
+        # print(code_idx.shape)
+        # code_idx = code_idx.view(N, -1)
+        # (N, T, Q)
+        # print()
+        return code_idx, all_codes
+
+    def forward(self, x, motion_mask = None, text_mask = None, text_id = None):
+        x_in = self.preprocess(x)
+        # Encode
+        x_encoder = self.encoder(x_in)
+        x_quantized, code_idx, commit_loss, perplexity = self.quantizer(x_encoder, sample_codebook_temp=0.5)
+        if self.args.lgvq == 1:
+            # x_encoder = self.lgvq_encoder(x_encoder)
+            cls_token, loss_lgvq, sem_quantized = self.lgvq_encoder(x_encoder.permute(0,2,1), text_mask=text_mask, motion_mask=motion_mask, text_id=text_id)
+            loss_sem, perplexity_sem = sem_quantized
+            commit_loss = commit_loss + loss_sem
+            perplexity = perplexity + perplexity_sem
+            contrastive_loss, mlm_loss = loss_lgvq
+        else:
+            contrastive_loss, mlm_loss = torch.tensor(0), torch.tensor(0)
+        ## quantization
+        # x_quantized, code_idx, commit_loss, perplexity = self.quantizer(x_encoder, sample_codebook_temp=0.5,
+        #                                                                 force_dropout_index=0) #TODO hardcode
+        # print(code_idx[0, :, 1])
+        ## decoder
+        x_out = self.decoder(x_quantized)
+        x_out = self.postprocess(x_out)
+        return x_out, commit_loss, perplexity, [contrastive_loss, mlm_loss]
+
+    def forward_decoder(self, x):
+        x_d = self.quantizer.get_codes_from_indices(x)
+        # x_d = x_d.view(1, -1, self.code_dim).permute(0, 2, 1).contiguous()
+        x = x_d.sum(dim=0).permute(0, 2, 1)
+
+        # decoder
+        x_out = self.decoder(x)
+        # x_out = self.postprocess(x_decoder)
+        return x_out

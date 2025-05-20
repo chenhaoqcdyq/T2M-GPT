@@ -61,7 +61,7 @@ def get_args_parser():
     parser.add_argument('--loss-contrastive', default=0.1, type=float, help='loss contrastive')
     parser.add_argument('--loss-mlm', default=0.1, type=float, help='loss mlm')
     parser.add_argument('--freeze-encdec', default=0, type=int, help='freeze encdec')
-    parser.add_argument('--num_quantizers', default=1, type=int, help='number of sem quantizers')
+    # parser.add_argument('--num_quantizers', default=1, type=int, help='number of sem quantizers')
     parser.add_argument('--down_sample', default=0, type=int, help='down sample')
     parser.add_argument('--down_vqvae', default=0, type=int, help='down sample vqvae')
     parser.add_argument('--enc', default='transformer', type=str, help='down sample vqvae')
@@ -69,5 +69,10 @@ def get_args_parser():
     parser.add_argument('--dec_causal', default=0, type=int, help='decausal')
     parser.add_argument('--layer_norm', default=0, type=int, help='layer norm')
     # parser.add_argument('--sem_nb_code', default=256, type=int, help='number of sem quantizers')
+    
+    # rvqvae:
+    parser.add_argument('--num_quantizers', default=6, type=int, help='number of sem quantizers')
+    parser.add_argument('--shared_codebook', default=0, type=int, help='shared codebook')
+    parser.add_argument('--quantize_dropout_prob', default=0.2, type=float, help='quantize dropout prob')
     
     return parser.parse_args()
