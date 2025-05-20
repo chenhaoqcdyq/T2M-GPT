@@ -247,6 +247,8 @@ class RVQVAE(nn.Module):
         N, T, _ = x.shape
         x_in = self.preprocess(x)
         x_encoder = self.encoder(x_in)
+        if self.args.lgvq == 1:
+            x_encoder = self.lgvq_encoder.encode(x_encoder)
         # print(x_encoder.shape)
         code_idx, all_codes = self.quantizer.quantize(x_encoder, return_latent=True)
         # print(code_idx.shape)

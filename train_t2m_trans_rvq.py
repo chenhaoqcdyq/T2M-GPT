@@ -18,6 +18,7 @@ import utils.eval_trans as eval_trans
 from dataset import dataset_TM_eval
 from dataset import dataset_tokenize
 import models.t2m_trans as trans
+import models.t2m_trans_rvq as trans_rvq
 from options.get_eval_option import get_opt
 from models.evaluator_wrapper import EvaluatorModelWrapper
 import warnings
@@ -125,7 +126,8 @@ if "down_vqvae" in args_vq:
 else:
     unit_length = 1
 semantic_len = ((196 // unit_length) + 3) // 4 + 1
-trans_encoder = trans.Text2Motion_Transformer(num_vq=num_vq_trans, 
+
+trans_encoder = trans_rvq.Text2Motion_Transformer(num_vq=num_vq_trans, 
                                 embed_dim=args.embed_dim_gpt, 
                                 clip_dim=args.clip_dim, 
                                 block_size=args.block_size, 
@@ -137,6 +139,14 @@ trans_encoder = trans.Text2Motion_Transformer(num_vq=num_vq_trans,
                                 semantic_len=semantic_len,
                                 dual_head_flag=(args.sample_way == 2))
 
+Residual_Transformer = trans_rvq.Text2Motion_RVQ_Transformer(num_vq=num_vq_trans, 
+                                embed_dim=args.embed_dim_gpt, 
+                                clip_dim=args.clip_dim, 
+                                block_size=args_vq.num_quantizers + 1, 
+                                num_layers=args.num_layers, 
+                                n_head=args.n_head_gpt, 
+                                drop_out_rate=args.drop_out_rate, 
+                                fc_rate=args.ff_rate)
 
 if args.resume_trans is not None:
     print ('loading transformer checkpoint from {}'.format(args.resume_trans))
@@ -144,6 +154,15 @@ if args.resume_trans is not None:
     trans_encoder.load_state_dict(ckpt['trans'], strict=True)
 trans_encoder.train()
 trans_encoder.cuda()
+
+Residual_trans_encoder = trans_rvq.Residual_encoder(trans_encoder, 
+                                                    t2m_encoder=Residual_Transformer, 
+                                                    embed_dim=args.embed_dim_gpt, 
+                                                    num_vq=num_vq_trans, 
+                                                    semantic_flag=semantic_flag, 
+                                                    num_quantizers = args_vq.num_quantizers) 
+Residual_trans_encoder.cuda()
+Residual_trans_encoder.train()
 
 ##### ---- Optimizer & Scheduler ---- #####
 optimizer = utils_model.initial_optim(args.decay_option, args.lr, args.weight_decay, trans_encoder, args.optimizer)
@@ -218,6 +237,7 @@ while nb_iter <= args.total_iter:
     batch = next(train_loader_iter)
     clip_text, m_tokens, m_tokens_len = batch
     if isinstance(m_tokens_len, list) and len(m_tokens_len) == 2:
+        # m_tokens (B, P, L)
         m_tokens_len, sem_tokens_len = m_tokens_len
         m_tokens_len, sem_tokens_len = m_tokens_len.cuda(), sem_tokens_len.cuda()
     else:
@@ -250,14 +270,10 @@ while nb_iter <= args.total_iter:
     mask = mask.round().to(dtype=torch.int64) # torch.Size([128, 50])
     r_indices = torch.randint_like(input_index, args.nb_code)
     a_indices = mask*input_index+(1-mask)*r_indices
-    if sem_tokens_len is not None:
-        cls_pred = trans_encoder(a_indices, feat_clip_text, semantic_valid_lengths=sem_tokens_len) # torch.Size([128, 50]), torch.Size([128, 512])
-    else:
-        cls_pred = trans_encoder(a_indices, feat_clip_text) # torch.Size([128, 50]), torch.Size([128, 512])
-    cls_pred = cls_pred.contiguous() # torch.Size([128, 51, 513])
-
+    cls_pred = Residual_trans_encoder(a_indices, feat_clip_text, semantic_valid_lengths=sem_tokens_len)
+    # cls_pred (B, L, P, C)
     loss_cls = 0.0
-    # loss_sem_cls = 0.0
+
     for i in range(bs):
         # loss function     (26), (26, 513)
         if sem_tokens_len is None:
@@ -307,7 +323,8 @@ while nb_iter <= args.total_iter:
         nb_sample_train = 0
 
     if nb_iter % args.eval_iter ==  0:
-        best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer_batch(args.out_dir, val_loader, net, trans_encoder, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model=clip_model, eval_wrapper=eval_wrapper, semantic_flag=((args_vq.lgvq==1 or args.test_nb) and args.sample_way != 2), draw=False, dual_head_flag=(args.sample_way == 2))
+        # best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer_batch(args.out_dir, val_loader, net, trans_encoder, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model=clip_model, eval_wrapper=eval_wrapper, semantic_flag=((args_vq.lgvq==1 or args.test_nb) and args.sample_way != 2), draw=False, dual_head_flag=(args.sample_way == 2))
+        torch.save({'trans' : trans_encoder.state_dict()}, os.path.join(args.out_dir, f'net_{nb_iter}.pth'))
 
     if nb_iter == args.total_iter: 
         msg_final = f"Train. Iter {best_iter} : FID. {best_fid:.5f}, Diversity. {best_div:.4f}, TOP1. {best_top1:.4f}, TOP2. {best_top2:.4f}, TOP3. {best_top3:.4f}"
