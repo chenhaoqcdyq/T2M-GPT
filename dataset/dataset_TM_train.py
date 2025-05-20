@@ -116,27 +116,46 @@ class Text2MotionDataset(data.Dataset):
         data = self.data_dict[self.name_list[item]]
         m_token_list, text_list = data['m_token_list'], data['text']
         m_tokens = random.choice(m_token_list)
-
+        
         text_data = random.choice(text_list)
         caption= text_data['caption']
 
-        
-        coin = np.random.choice([False, False, True])
-        # print(len(m_tokens))
-        if coin:
-            # drop one token at the head or tail
-            coin2 = np.random.choice([True, False])
-            if coin2:
-                m_tokens = m_tokens[:-1]
-            else:
-                m_tokens = m_tokens[1:]
-        m_tokens_len = m_tokens.shape[0]
+        if len(m_tokens.shape) == 2:
+            m_tokens = m_tokens.transpose(1, 0)
+            # m_tokens (6, 196)
+            coin = np.random.choice([False, False, True])
+            # print(len(m_tokens))
+            if coin:
+                # drop one token at the head or tail
+                coin2 = np.random.choice([True, False])
+                if coin2:
+                    m_tokens = m_tokens[:, :-1]
+                else:
+                    m_tokens = m_tokens[:, 1:]
+            m_tokens_len = m_tokens.shape[1]
 
-        if m_tokens_len+1 < self.max_motion_length:
-            m_tokens = np.concatenate([m_tokens, np.ones((1), dtype=int) * self.mot_end_idx, np.ones((self.max_motion_length-1-m_tokens_len), dtype=int) * self.mot_pad_idx], axis=0)
+            if m_tokens_len+1 < self.max_motion_length:
+                m_tokens = [np.concatenate([m_tokens[i], np.ones((1), dtype=int) * self.mot_end_idx, np.ones((self.max_motion_length-1-m_tokens_len), dtype=int) * self.mot_pad_idx], axis=0) for i in range(m_tokens.shape[0])]
+            else:
+                m_tokens = [np.concatenate([m_tokens[i], np.ones((1), dtype=int) * self.mot_end_idx], axis=0) for i in range(m_tokens.shape[0])]
+            m_tokens = np.stack(m_tokens, axis=0)
+            return caption, m_tokens, m_tokens_len
         else:
-            m_tokens = np.concatenate([m_tokens, np.ones((1), dtype=int) * self.mot_end_idx], axis=0)
-        
+            coin = np.random.choice([False, False, True])
+            # print(len(m_tokens))
+            if coin:
+                # drop one token at the head or tail
+                coin2 = np.random.choice([True, False])
+                if coin2:
+                    m_tokens = m_tokens[:-1]
+                else:
+                    m_tokens = m_tokens[1:]
+            m_tokens_len = m_tokens.shape[0]
+
+            if m_tokens_len+1 < self.max_motion_length:
+                m_tokens = np.concatenate([m_tokens, np.ones((1), dtype=int) * self.mot_end_idx, np.ones((self.max_motion_length-1-m_tokens_len), dtype=int) * self.mot_pad_idx], axis=0)
+            else:
+                m_tokens = np.concatenate([m_tokens, np.ones((1), dtype=int) * self.mot_end_idx], axis=0)
         if self.test_nb:
             m_tokens = m_tokens + self.codebook_size + 1 # 513
 

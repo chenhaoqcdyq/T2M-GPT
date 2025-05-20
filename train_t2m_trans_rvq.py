@@ -65,7 +65,7 @@ json_file = os.path.join(path, 'train_config.json')
 with open(json_file, 'r') as f:
     train_args_dict = json.load(f)  # dict
 args_vq = eval_trans.EasyDict(train_args_dict) 
-net = vqvae.RVQVAE(args, ## use args_vq to define different parameters in different quantizers
+net = vqvae.RVQVAE(args_vq, ## use args_vq to define different parameters in different quantizers
                    input_width=251 if args_vq.dataname == 'kit' else 263,
                     nb_code=args_vq.nb_code,
                     code_dim=args_vq.code_dim,
@@ -148,22 +148,22 @@ Residual_Transformer = trans_rvq.Text2Motion_RVQ_Transformer(num_vq=num_vq_trans
                                 drop_out_rate=args.drop_out_rate, 
                                 fc_rate=args.ff_rate)
 
-if args.resume_trans is not None:
-    print ('loading transformer checkpoint from {}'.format(args.resume_trans))
-    ckpt = torch.load(args.resume_trans, map_location='cpu')
-    trans_encoder.load_state_dict(ckpt['trans'], strict=True)
-trans_encoder.train()
-trans_encoder.cuda()
+
 
 Residual_trans_encoder = trans_rvq.Residual_encoder(trans_encoder, 
-                                                    t2m_encoder=Residual_Transformer, 
+                                                    residual_encoder=Residual_Transformer, 
                                                     embed_dim=args.embed_dim_gpt, 
                                                     num_vq=num_vq_trans, 
                                                     semantic_flag=semantic_flag, 
                                                     num_quantizers = args_vq.num_quantizers) 
 Residual_trans_encoder.cuda()
 Residual_trans_encoder.train()
-
+if args.resume_trans is not None:
+    print ('loading transformer checkpoint from {}'.format(args.resume_trans))
+    ckpt = torch.load(args.resume_trans, map_location='cpu')
+    Residual_trans_encoder.load_state_dict(ckpt['Residual_trans_encoder'], strict=True)
+Residual_trans_encoder.train()
+Residual_trans_encoder.cuda()
 ##### ---- Optimizer & Scheduler ---- #####
 optimizer = utils_model.initial_optim(args.decay_option, args.lr, args.weight_decay, trans_encoder, args.optimizer)
 scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=args.lr_scheduler, gamma=args.gamma)
@@ -192,12 +192,13 @@ for batch in tqdm(train_loader_token):
 
     pose = pose.cuda().float() # bs, nb_joints, joints_dim, seq_len (1,124,263)
     target = net.encode(pose)
-    if isinstance(target, tuple):
+    if args_vq.lgvq == 0:
         motion_idx = target[0]
-        sem_idx = target[1]
-    else:
-        motion_idx = target
+        # sem_idx = target[1]
         sem_idx = None
+    else:
+        motion_idx = target[0]
+        sem_idx = target[2]
     motion_idx = motion_idx.cpu().numpy() # (1, x)
     if generate_idx == True:
         m_tokens_len = motion_idx.shape[1]
@@ -258,7 +259,7 @@ while nb_iter <= args.total_iter:
         
     feat_clip_text = clip_model.encode_text(text).float()
 
-    input_index = target[:,:-1]
+    input_index = target[:, :, :-1]
 
     if args.pkeep == -1:
         proba = np.random.rand(1)[0]
@@ -270,7 +271,7 @@ while nb_iter <= args.total_iter:
     mask = mask.round().to(dtype=torch.int64) # torch.Size([128, 50])
     r_indices = torch.randint_like(input_index, args.nb_code)
     a_indices = mask*input_index+(1-mask)*r_indices
-    cls_pred = Residual_trans_encoder(a_indices, feat_clip_text, semantic_valid_lengths=sem_tokens_len)
+    cls_pred = Residual_trans_encoder(a_indices, feat_clip_text, sem_tokens_len=sem_tokens_len)
     # cls_pred (B, L, P, C)
     loss_cls = 0.0
 
@@ -324,7 +325,7 @@ while nb_iter <= args.total_iter:
 
     if nb_iter % args.eval_iter ==  0:
         # best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger = eval_trans.evaluation_transformer_batch(args.out_dir, val_loader, net, trans_encoder, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model=clip_model, eval_wrapper=eval_wrapper, semantic_flag=((args_vq.lgvq==1 or args.test_nb) and args.sample_way != 2), draw=False, dual_head_flag=(args.sample_way == 2))
-        torch.save({'trans' : trans_encoder.state_dict()}, os.path.join(args.out_dir, f'net_{nb_iter}.pth'))
+        torch.save({'Residual_trans_encoder' : Residual_trans_encoder.state_dict()}, os.path.join(args.out_dir, f'net_{nb_iter}.pth'))
 
     if nb_iter == args.total_iter: 
         msg_final = f"Train. Iter {best_iter} : FID. {best_fid:.5f}, Diversity. {best_div:.4f}, TOP1. {best_top1:.4f}, TOP2. {best_top2:.4f}, TOP3. {best_top3:.4f}"

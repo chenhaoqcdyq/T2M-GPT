@@ -229,10 +229,10 @@ for nb_iter in range(1, args.total_iter + 1):
     gt_motion = gt_motion.cuda().float() # bs, nb_joints, joints_dim, seq_len
     if gt_motion_mask is not None:
         gt_motion_mask = gt_motion_mask.cuda().long() # bs, seq_len
-    net_start_time = time.time()
+    # net_start_time = time.time()
     pred_motion, loss_commit, perplexity, loss_lgvq = net(gt_motion, gt_motion_mask, text_mask, name)
-    net_end_time = time.time()
-    logger.info(f"Net forward time: {(net_end_time - net_start_time)*1000:.2f} ms")
+    # net_end_time = time.time()
+    # logger.info(f"Net forward time: {(net_end_time - net_start_time)*1000:.2f} ms")
     contrastive_loss, mlm_loss = loss_lgvq
     loss_motion = Loss(pred_motion, gt_motion, gt_motion_mask)
     loss_vel = Loss.forward_vel(pred_motion, gt_motion, gt_motion_mask)

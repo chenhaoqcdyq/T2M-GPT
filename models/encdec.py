@@ -35,20 +35,47 @@ class Encoder(nn.Module):
         else:
             blocks.append(nn.Conv1d(input_emb_width, width, 3, 1, 1))
         blocks.append(nn.ReLU())
-        
-        for i in range(down_t):
-            input_dim = width
+        if down_t < 3:
+            for i in range(down_t):
+                input_dim = width
+                if causal:
+                    causal_pad = (filter_t-1)
+                    block = nn.Sequential(
+                        nn.ConstantPad1d((causal_pad,0), 0),  # 左侧填充
+                        nn.Conv1d(input_dim, width, filter_t, stride_t, 0),
+                        Resnet1D(width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=causal),
+                    )
+                else:
+                    block = nn.Sequential(
+                        nn.Conv1d(input_dim, width, filter_t, stride_t, pad_t),
+                        Resnet1D(width, depth, dilation_growth_rate, activation=activation, norm=norm),
+                    )
+                blocks.append(block)
+        else:
+            for i in range(2):
+                input_dim = width
+                if causal:
+                    causal_pad = (filter_t-1)
+                    block = nn.Sequential(
+                        nn.ConstantPad1d((causal_pad,0), 0),  # 左侧填充
+                        nn.Conv1d(input_dim, width, filter_t, stride_t, 0),
+                        Resnet1D(width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=causal),
+                    )
+                else:
+                    block = nn.Sequential(
+                        nn.Conv1d(input_dim, width, filter_t, stride_t, pad_t),
+                        Resnet1D(width, depth, dilation_growth_rate, activation=activation, norm=norm),
+                    )
+                blocks.append(block)
             if causal:
                 causal_pad = (filter_t-1)
                 block = nn.Sequential(
-                    nn.ConstantPad1d((causal_pad,0), 0),  # 左侧填充
-                    nn.Conv1d(input_dim, width, filter_t, stride_t, 0),
-                    Resnet1D(width, depth, dilation_growth_rate, activation=activation, norm=norm, causal=causal),
-                )
+                        nn.ConstantPad1d((causal_pad,0), 0),  # 左侧填充
+                        nn.Conv1d(input_dim, width, filter_t, stride_t, 0),
+                    )
             else:
                 block = nn.Sequential(
                     nn.Conv1d(input_dim, width, filter_t, stride_t, pad_t),
-                    Resnet1D(width, depth, dilation_growth_rate, activation=activation, norm=norm),
                 )
             blocks.append(block)
         if causal:
@@ -198,21 +225,44 @@ class Decoder(nn.Module):
         else:
             blocks.append(nn.Conv1d(output_emb_width, width, 3, 1, 1))
         blocks.append(nn.ReLU())
-        for i in range(down_t):
-            out_dim = width
-            if causal:
-                block = nn.Sequential(
-                    Resnet1D(width, depth, dilation_growth_rate, reverse_dilation=True, activation=activation, norm=norm, causal=causal),
-                    nn.Upsample(scale_factor=2, mode='nearest'),
-                    nn.ConstantPad1d((2,0), 0),
-                    nn.Conv1d(width, out_dim, 3, 1, 0)
-                )
-            else:  
-                block = nn.Sequential(
-                    Resnet1D(width, depth, dilation_growth_rate, reverse_dilation=True, activation=activation, norm=norm),
-                    nn.Upsample(scale_factor=2, mode='nearest'),
-                    nn.Conv1d(width, out_dim, 3, 1, 1)
-                )
+        if down_t < 3:
+            for i in range(down_t):
+                out_dim = width
+                if causal:
+                    block = nn.Sequential(
+                        Resnet1D(width, depth, dilation_growth_rate, reverse_dilation=True, activation=activation, norm=norm, causal=causal),
+                        nn.Upsample(scale_factor=2, mode='nearest'),
+                        nn.ConstantPad1d((2,0), 0),
+                        nn.Conv1d(width, out_dim, 3, 1, 0)
+                    )
+                else:  
+                    block = nn.Sequential(
+                        Resnet1D(width, depth, dilation_growth_rate, reverse_dilation=True, activation=activation, norm=norm),
+                        nn.Upsample(scale_factor=2, mode='nearest'),
+                        nn.Conv1d(width, out_dim, 3, 1, 1)
+                    )
+                blocks.append(block)
+        else:
+            for i in range(2):
+                out_dim = width
+                if causal:
+                    block = nn.Sequential(
+                        Resnet1D(width, depth, dilation_growth_rate, reverse_dilation=True, activation=activation, norm=norm, causal=causal),
+                        nn.Upsample(scale_factor=2, mode='nearest'),
+                        nn.ConstantPad1d((2,0), 0),
+                        nn.Conv1d(width, out_dim, 3, 1, 0)
+                    )
+                else:  
+                    block = nn.Sequential(
+                        Resnet1D(width, depth, dilation_growth_rate, reverse_dilation=True, activation=activation, norm=norm),
+                        nn.Upsample(scale_factor=2, mode='nearest'),
+                        nn.Conv1d(width, out_dim, 3, 1, 1)
+                    )
+                blocks.append(block)
+            block = nn.Sequential(
+                nn.Upsample(scale_factor=2, mode='nearest'),
+                nn.Conv1d(width, out_dim, 3, 1, 1)
+            )
             blocks.append(block)
         if causal:
             blocks.append(nn.ConstantPad1d((2,0), 0))

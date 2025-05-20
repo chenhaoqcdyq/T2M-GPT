@@ -13,6 +13,7 @@ from copy import deepcopy
 from functools import partial
 import clip
 from models.encdec import CausalTransformerEncoder
+from einops import rearrange
 
 class Residual_encoder(nn.Module):
     def __init__(self, t2m_encoder, residual_encoder, embed_dim, num_vq=512, semantic_flag=False, num_quantizers = 6):
@@ -22,6 +23,7 @@ class Residual_encoder(nn.Module):
         self.num_quantizers = num_quantizers
         self.tok_emb = nn.ModuleList([nn.Embedding(num_vq + 2, embed_dim) for _ in range(num_quantizers)])
         self.semantic_flag = semantic_flag
+        self.token_emb = nn.Linear(num_vq + 1, embed_dim)
         if self.semantic_flag:
             self.sem_tok_emb = nn.ModuleList([nn.Embedding(num_vq + 2, embed_dim) for _ in range(num_quantizers)])
             self.sem_len = t2m_encoder.semantic_len
@@ -30,15 +32,15 @@ class Residual_encoder(nn.Module):
     def forward(self, a_indices, feat_clip_text, sem_tokens_len=None):
         # a_indices (B, P, L)
         if self.semantic_flag:
-            sem_feature = [self.sem_tok_emb[i](a_indices[:, i, :self.sem_len]) for i in range(self.num_quantizers)]
+            sem_feature = [self.sem_tok_emb[i](a_indices[:, i:i+1, :self.sem_len]) for i in range(self.num_quantizers)]
             sem_feature = torch.cat(sem_feature, dim=1)
-            recon_feature = [self.tok_emb[i](a_indices[:, i, self.sem_len:]) for i in range(self.num_quantizers)]
+            recon_feature = [self.tok_emb[i](a_indices[:, i:i+1, self.sem_len:]) for i in range(self.num_quantizers)]
             recon_feature = torch.cat(recon_feature, dim=1)
             feature_a_indices = torch.cat([sem_feature, recon_feature], dim=1)
         else:
-            feature_a_indices = [self.tok_emb[i](a_indices[:, i, :]) for i in range(self.num_quantizers)]
+            feature_a_indices = [self.tok_emb[i](a_indices[:, i:i+1, :]) for i in range(self.num_quantizers)]
             # (B, L, C) * P -> (B, P, L, C)
-            feature_a_indices = torch.cat(feature_a_indices, dim=1)
+            feature_a_indices = torch.cat(feature_a_indices,dim=1)
         # feature_a_indices (B, P, L, C)
         first_quantizer_indices = feature_a_indices[:, 0, :, :]
         if sem_tokens_len is not None:
@@ -47,13 +49,14 @@ class Residual_encoder(nn.Module):
             first_quantizer_cls_pred = self.t2m_encoder(first_quantizer_indices, feat_clip_text) 
         first_quantizer_cls_pred = first_quantizer_cls_pred.contiguous() 
         # first_quantizer_cls_pred (B, P, C)
-        bs, P, L, C = a_indices.shape
-        first_quantizer_cls_pred = first_quantizer_cls_pred.view(bs * L, 1, C)
-        residual_cls_pred = self.residual_encoder(a_indices[:, :P-1, :, :].view(bs * L, P-1, C), first_quantizer_cls_pred)
+        bs, P, L, C = feature_a_indices.shape
+        first_quantizer_cls_pred = rearrange(first_quantizer_cls_pred, 'b l c -> (b l) c').unsqueeze(1)
+        residual_input = torch.cat([self.token_emb(first_quantizer_cls_pred), rearrange(feature_a_indices[:, :P-1, :, :], 'b p l c -> (b l) p c')], dim=1)
+        residual_cls_pred = self.residual_encoder(torch.cumsum(residual_input, dim=1))
         # residual_cls_pred (B*L, P-1, C)
-        cls_pred = torch.cumsum(residual_cls_pred, dim=1)
+        # cls_pred = torch.cumsum(residual_cls_pred, dim=1)
         # cls_pred (B*L, P, C)
-        cls_pred = cls_pred.view(bs, L, P, C)
+        cls_pred = rearrange(residual_cls_pred, '(b l) p c -> b l p c', b=bs, l=L)
 
         return cls_pred
 
@@ -560,7 +563,7 @@ class Text2Motion_RVQ_Transformer(nn.Module):
     def get_block_size(self):
         return self.block_size
 
-    def forward(self, idxs, clip_feature):
+    def forward(self, idxs, clip_feature=None):
         # B, T_sequence = idxs.shape
         # device = idxs.device
         # Pass the appropriate masks to trans_base and trans_head
@@ -750,7 +753,7 @@ class CrossCondTransBase(nn.Module):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
     
-    def forward(self, idx, clip_feature, key_padding_mask=None):
+    def forward(self, idx, clip_feature=None):
         if len(idx) == 0:
             token_embeddings = self.cond_emb(clip_feature).unsqueeze(1)
         else:
@@ -758,8 +761,8 @@ class CrossCondTransBase(nn.Module):
             assert t <= self.block_size, "Cannot forward, model block size is exhausted."
             # forward the Trans model
             token_embeddings = idx
-            token_embeddings = torch.cat([self.cond_emb(clip_feature).unsqueeze(1), token_embeddings], dim=1)
-            
+            if clip_feature is not None:
+                token_embeddings = torch.cat([self.cond_emb(clip_feature).unsqueeze(1), token_embeddings], dim=1)
         x = self.pos_embed(token_embeddings)
         x = self.blocks(x)
 
