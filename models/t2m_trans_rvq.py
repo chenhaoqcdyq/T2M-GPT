@@ -46,11 +46,11 @@ class Residual_encoder(nn.Module):
         if sem_tokens_len is not None:
             first_quantizer_cls_pred = self.t2m_encoder(first_quantizer_indices, feat_clip_text, semantic_valid_lengths=sem_tokens_len)
         else:
-            first_quantizer_cls_pred = self.t2m_encoder(first_quantizer_indices, feat_clip_text) 
+            first_quantizer_cls_pred = self.t2m_encoder(first_quantizer_indices, feat_clip_text)
         first_quantizer_cls_pred = first_quantizer_cls_pred.contiguous() 
         # first_quantizer_cls_pred (B, P, C)
         bs, P, L, C = feature_a_indices.shape
-        first_quantizer_cls_pred = rearrange(first_quantizer_cls_pred, 'b l c -> (b l) c').unsqueeze(1)
+        first_quantizer_cls_pred = rearrange(first_quantizer_cls_pred[:,:L], 'b l c -> (b l) c').unsqueeze(1)
         residual_input = torch.cat([self.token_emb(first_quantizer_cls_pred), rearrange(feature_a_indices[:, :P-1, :, :], 'b p l c -> (b l) p c')], dim=1)
         residual_cls_pred = self.residual_encoder(torch.cumsum(residual_input, dim=1))
         # residual_cls_pred (B*L, P-1, C)

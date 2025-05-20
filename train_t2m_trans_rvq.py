@@ -143,7 +143,7 @@ Residual_Transformer = trans_rvq.Text2Motion_RVQ_Transformer(num_vq=num_vq_trans
                                 embed_dim=args.embed_dim_gpt, 
                                 clip_dim=args.clip_dim, 
                                 block_size=args_vq.num_quantizers + 1, 
-                                num_layers=args.num_layers, 
+                                num_layers=args.num_reslayers, 
                                 n_head=args.n_head_gpt, 
                                 drop_out_rate=args.drop_out_rate, 
                                 fc_rate=args.ff_rate)
@@ -273,12 +273,13 @@ while nb_iter <= args.total_iter:
     a_indices = mask*input_index+(1-mask)*r_indices
     cls_pred = Residual_trans_encoder(a_indices, feat_clip_text, sem_tokens_len=sem_tokens_len)
     # cls_pred (B, L, P, C)
+    target = target.permute(0, 2, 1)
     loss_cls = 0.0
 
     for i in range(bs):
         # loss function     (26), (26, 513)
         if sem_tokens_len is None:
-            loss_cls += loss_ce(cls_pred[i][:m_tokens_len[i] + 1], target[i][:m_tokens_len[i] + 1]) / bs
+            loss_cls += loss_ce(cls_pred[i][:m_tokens_len[i] + 1].reshape(-1, cls_pred[i][:m_tokens_len[i] + 1].shape[-1]), target[i][:m_tokens_len[i] + 1].reshape(-1)) / bs
             # Accuracy
             probs = torch.softmax(cls_pred[i][:m_tokens_len[i] + 1], dim=-1)
         else:
