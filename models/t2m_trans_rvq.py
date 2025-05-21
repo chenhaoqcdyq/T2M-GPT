@@ -50,8 +50,8 @@ class Residual_encoder(nn.Module):
             first_quantizer_cls_pred = self.t2m_encoder(first_quantizer_indices, feat_clip_text)
         first_quantizer_cls_pred = first_quantizer_cls_pred.contiguous() 
         # first_quantizer_cls_pred (B, P, C)
-        bs, P, L = first_quantizer_cls_pred.shape
-        first_quantizer_cls_pred = rearrange(first_quantizer_cls_pred[:,:L], 'b l c -> (b l) c').unsqueeze(1)
+        bs, L, D = first_quantizer_cls_pred.shape
+        first_quantizer_cls_pred = rearrange(first_quantizer_cls_pred, 'b l c -> (b l) c').unsqueeze(1)
         # feature_a_indices_woclip = rearrange(feature_a_indices[:, :P-1, :, :], 'b p l c -> (b l) p c')
         feature_a_indices_wclip = torch.stack([torch.cat([self.clip_emb[i](feat_clip_text).unsqueeze(1), feature_a_indices[:, i, :, :]], dim=1) for i in range(self.num_quantizers)], dim=1)
         residual_input = torch.cat([first_quantizer_cls_pred, rearrange(feature_a_indices_wclip, 'b p l c -> (b l) p c')], dim=1)

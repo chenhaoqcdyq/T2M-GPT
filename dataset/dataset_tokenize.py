@@ -15,7 +15,7 @@ class VQMotionDataset(data.Dataset):
         self.feat_bias = feat_bias
 
         self.dataset_name = dataset_name
-        min_motion_len = 40 if dataset_name =='t2m' else 24
+        self.min_motion_len = 40 if dataset_name =='t2m' else 24
         
         if dataset_name == 't2m':
             self.data_root = './dataset/HumanML3D'
@@ -47,22 +47,35 @@ class VQMotionDataset(data.Dataset):
         
         split_file = pjoin(self.data_root, 'train.txt')
         
-        data_dict = {}
+        self.data_dict = {}
         id_list = []
         with cs.open(split_file, 'r') as f:
             for line in f.readlines():
                 id_list.append(line.strip())
 
-        new_name_list = []
-        length_list = []
+        self.name_list = []
+        self.length_list = []
+        self.load_data(id_list)
+
+
+        self.mean = mean
+        self.std = std
+        self.length_arr = np.array(self.length_list)
+        # self.data_dict = data_dict
+        # self.name_list = new_name_list
+    
+    def load_data(self, id_list):
+        import threading
+        # self._lock = threading.Lock()
         for name in tqdm(id_list):
             try:
+                # with self._lock:
                 motion = np.load(pjoin(self.motion_dir, name + '.npy'))
-                if (len(motion)) < min_motion_len or (len(motion) >= 200):
+                if (len(motion)) < self.min_motion_len or (len(motion) >= 200):
                     continue
 
-                new_name_list.append(name)
-                length_list.append(len(motion))
+                self.name_list.append(name)
+                self.length_list.append(len(motion))
                 text_data = []
                 text_path = pjoin(self.text_dir, name + '.txt')
                 with cs.open(text_path, 'r') as f:
@@ -71,20 +84,13 @@ class VQMotionDataset(data.Dataset):
                         if len(line_split) > 0:
                             caption = line_split[0]
                             text_data.append(caption)
-                data_dict[name] = {'motion': motion,
-                                   'length': len(motion),
-                                   'name': name,
-                                   'text': text_data}
+                self.data_dict[name] = {'motion': motion,
+                                'length': len(motion),
+                                'name': name,
+                                'text': text_data}
             except:
                 # Some motion may not exist in KIT dataset
                 pass
-
-
-        self.mean = mean
-        self.std = std
-        self.length_arr = np.array(length_list)
-        self.data_dict = data_dict
-        self.name_list = new_name_list
 
     def inv_transform(self, data):
         return data * self.std + self.mean

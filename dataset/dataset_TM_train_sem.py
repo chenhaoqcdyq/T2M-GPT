@@ -230,6 +230,15 @@ def DATALoader(dataset_name,
 
     return train_loader
 
+def DATALoader_ddp(dataset_name, batch_size, codebook_size, tokenizer_name, unit_length=4, num_workers=4, sample_way=0):
+    # 返回数据集实例而不是DataLoader
+    return Text2MotionDataset(
+        dataset_name, 
+        codebook_size=codebook_size, 
+        tokenizer_name=tokenizer_name, 
+        unit_length=unit_length, 
+        sample_way=sample_way
+    )
 
 def cycle(iterable):
     while True:

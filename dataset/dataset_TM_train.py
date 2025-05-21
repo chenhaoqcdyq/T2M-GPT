@@ -33,7 +33,7 @@ class Text2MotionDataset(data.Dataset):
             self.text_dir = pjoin(self.data_root, 'texts')
             self.joints_num = 22
             radius = 4
-            fps = 20
+            self.fps = 20
             self.max_motion_length = 196 // unit_length + 2
             dim_pose = 263
             kinematic_chain = paramUtil.t2m_kinematic_chain
@@ -43,7 +43,7 @@ class Text2MotionDataset(data.Dataset):
             self.text_dir = pjoin(self.data_root, 'texts')
             self.joints_num = 21
             radius = 240 * 8
-            fps = 12.5
+            self.fps = 12.5
             dim_pose = 251
             self.max_motion_length = 196 // unit_length + 2
             kinematic_chain = paramUtil.kit_kinematic_chain
@@ -55,16 +55,24 @@ class Text2MotionDataset(data.Dataset):
         with cs.open(split_file, 'r') as f:
             for line in f.readlines():
                 id_list.append(line.strip())
-
-        new_name_list = []
-        data_dict = {}
+        self.tokenizer_name = tokenizer_name
+        self.name_list = []
+        self.data_dict = {}
+        
+        # self.data_dict = data_dict
+        # self.name_list = new_name_list
+        
+    def load_data(self, id_list):
+        # import threading
+        # self._lock = threading.Lock()
         for name in tqdm(id_list):
             try:
-                if os.path.exists(pjoin(self.data_root, tokenizer_name, '%s.npz'%name)):
-                    m_token_list = np.load(pjoin(self.data_root, tokenizer_name, '%s.npz'%name))
+                # with self._lock:
+                if os.path.exists(pjoin(self.data_root, self.tokenizer_name, '%s.npz'%name)):
+                    m_token_list = np.load(pjoin(self.data_root, self.tokenizer_name, '%s.npz'%name))
                     m_token_list = m_token_list['motion']
-                elif os.path.exists(pjoin(self.data_root, tokenizer_name, '%s.npy'%name)):
-                    m_token_list = np.load(pjoin(self.data_root, tokenizer_name, '%s.npy'%name))
+                elif os.path.exists(pjoin(self.data_root, self.tokenizer_name, '%s.npy'%name)):
+                    m_token_list = np.load(pjoin(self.data_root, self.tokenizer_name, '%s.npy'%name))
                 # Read text
                 with cs.open(pjoin(self.text_dir, name + '.txt')) as f:
                     text_data = []
@@ -88,27 +96,25 @@ class Text2MotionDataset(data.Dataset):
                                 flag = True
                                 text_data.append(text_dict)
                             else:
-                                m_token_list_new = [tokens[int(f_tag*fps/unit_length) : int(to_tag*fps/unit_length)] for tokens in m_token_list if int(f_tag*fps/unit_length) < int(to_tag*fps/unit_length)]
+                                m_token_list_new = [tokens[int(f_tag*self.fps/self.unit_length) : int(to_tag*self.fps/self.unit_length)] for tokens in m_token_list if int(f_tag*self.fps/self.unit_length) < int(to_tag*self.fps/self.unit_length)]
 
                                 if len(m_token_list_new) == 0:
                                     continue
                                 new_name = '%s_%f_%f'%(name, f_tag, to_tag)
 
-                                data_dict[new_name] = {'m_token_list': m_token_list_new,
-                                                       'text':[text_dict]}
-                                new_name_list.append(new_name)
+                                self.data_dict[new_name] = {'m_token_list': m_token_list_new,
+                                                    'text':[text_dict]}
+                                self.name_list.append(new_name)
                         except:
                             pass
 
                 if flag:
-                    data_dict[name] = {'m_token_list': m_token_list,
-                                       'text':text_data}
-                    new_name_list.append(name)
+                    self.data_dict[name] = {'m_token_list': m_token_list,
+                                    'text':text_data}
+                    self.name_list.append(name)
             except:
                 pass
-        self.data_dict = data_dict
-        self.name_list = new_name_list
-
+            
     def __len__(self):
         return len(self.data_dict)
 
@@ -178,6 +184,15 @@ def DATALoader(dataset_name,
 
     return train_loader
 
+def DATALoader_ddp(dataset_name, batch_size, codebook_size, tokenizer_name, unit_length=4, num_workers=4, sample_way=0):
+    # 返回数据集实例而不是DataLoader
+    return Text2MotionDataset(
+        dataset_name, 
+        codebook_size=codebook_size, 
+        tokenizer_name=tokenizer_name, 
+        unit_length=unit_length, 
+        sample_way=sample_way
+    )
 
 def cycle(iterable):
     while True:
