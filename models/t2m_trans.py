@@ -93,9 +93,12 @@ class Text2Motion_Transformer(nn.Module):
         ], dim=1)
 
         # Pass the appropriate masks to trans_base and trans_head
-        feat = self.trans_base(idxs, clip_feature, key_padding_mask=final_attention_mask_for_trans_head_input)
-        logits = self.trans_head(feat, key_padding_mask=final_attention_mask_for_trans_head_input)
-        
+        if semantic_valid_lengths is not None:
+            feat = self.trans_base(idxs, clip_feature, key_padding_mask=final_attention_mask_for_trans_head_input)
+            logits = self.trans_head(feat, key_padding_mask=final_attention_mask_for_trans_head_input)
+        else:
+            feat = self.trans_base(idxs, clip_feature)
+            logits = self.trans_head(feat)
         return logits
 
     def sample_dual_head(self, clip_feature, if_categorial=False):

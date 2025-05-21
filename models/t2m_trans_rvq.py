@@ -23,7 +23,7 @@ class Residual_encoder(nn.Module):
         self.num_quantizers = num_quantizers
         self.tok_emb = nn.ModuleList([nn.Embedding(num_vq + 2, embed_dim) for _ in range(num_quantizers)])
         self.semantic_flag = semantic_flag
-        self.token_emb = nn.Linear(num_vq + 1, embed_dim)
+        # self.token_emb = nn.Linear(num_vq + 1, embed_dim)
         if self.semantic_flag:
             self.sem_tok_emb = nn.ModuleList([nn.Embedding(num_vq + 2, embed_dim) for _ in range(num_quantizers)])
             self.sem_len = t2m_encoder.semantic_len
@@ -51,7 +51,7 @@ class Residual_encoder(nn.Module):
         # first_quantizer_cls_pred (B, P, C)
         bs, P, L, C = feature_a_indices.shape
         first_quantizer_cls_pred = rearrange(first_quantizer_cls_pred[:,:L], 'b l c -> (b l) c').unsqueeze(1)
-        residual_input = torch.cat([self.token_emb(first_quantizer_cls_pred), rearrange(feature_a_indices[:, :P-1, :, :], 'b p l c -> (b l) p c')], dim=1)
+        residual_input = torch.cat([first_quantizer_cls_pred, rearrange(feature_a_indices[:, :P-1, :, :], 'b p l c -> (b l) p c')], dim=1)
         residual_cls_pred = self.residual_encoder(torch.cumsum(residual_input, dim=1))
         # residual_cls_pred (B*L, P-1, C)
         # cls_pred = torch.cumsum(residual_cls_pred, dim=1)
@@ -79,9 +79,9 @@ class Text2Motion_Transformer(nn.Module):
         
         if dual_head_flag:
             self.trans_base = CrossCondTransDualBase(num_vq, embed_dim, clip_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate, semantic_len)
-            self.trans_head = CrossCondTransDualHead(num_vq, embed_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate, semantic_len)
+            # self.trans_head = CrossCondTransDualHead(num_vq, embed_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate, semantic_len)
         else:
-            self.trans_head = CrossCondTransHead(num_vq, embed_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate)
+            # self.trans_head = CrossCondTransHead(num_vq, embed_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate)
             self.trans_base = CrossCondTransBase(num_vq, embed_dim, clip_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate)
         self.block_size = block_size
         self.num_vq = num_vq
@@ -136,9 +136,9 @@ class Text2Motion_Transformer(nn.Module):
 
         # Pass the appropriate masks to trans_base and trans_head
         feat = self.trans_base(idxs, clip_feature, key_padding_mask=final_attention_mask_for_trans_head_input)
-        logits = self.trans_head(feat, key_padding_mask=final_attention_mask_for_trans_head_input)
+        # logits = self.trans_head(feat, key_padding_mask=final_attention_mask_for_trans_head_input)
         
-        return logits
+        return feat
 
     def sample_dual_head(self, clip_feature, if_categorial=False):
         B = clip_feature.shape[0]

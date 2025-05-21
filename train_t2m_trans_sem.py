@@ -120,6 +120,8 @@ if "down_vqvae" in args_vq:
         unit_length = 4
     elif args_vq.down_vqvae and args_vq.down_t == 1:
         unit_length = 2
+    elif args_vq.down_vqvae and args_vq.down_t == 3:
+        unit_length = 8
     else:
         unit_length = 1
 else:

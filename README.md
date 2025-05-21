@@ -258,7 +258,7 @@ python3 VQ_eval.py \
 --loss-vel 0.5 \
 --recons-loss l1_smooth \
 --exp-name TEST_VQVAE \
---resume-pth output/VQVAE/net_last.pth
+--resume-pth pretrained/VQVAE/net_last.pth
 ```
 
 </details>
