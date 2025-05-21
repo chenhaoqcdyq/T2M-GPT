@@ -501,6 +501,93 @@ class Text2Motion_Transformer(nn.Module):
             
         return xs
 
+    def sample_cfg(self, clip_feature, if_categorial=False):
+        # B = 2, [cond, uncond]
+        B = clip_feature.shape[0]
+        device = clip_feature.device
+        xs = torch.empty((B, 0), dtype=torch.long, device=device)
+        all_sequences_finished = torch.zeros(B, dtype=torch.bool, device=device)
+
+        if self.dual_head_flag:
+            semantic_phase_ended_flags = torch.zeros(B, dtype=torch.bool, device=device)
+            # actual_semantic_lengths stores the true length of semantic content for each item.
+            # Initialized to self.semantic_len, assuming full semantic part unless ended early by EOS signal.
+            actual_semantic_lengths = torch.full((B,), self.semantic_len, dtype=torch.long, device=device)
+            currently_in_semantic_phase = torch.ones(B, dtype=torch.bool, device=device)
+        
+        for loop_idx in range(self.block_size):
+            if all_sequences_finished.all():
+                break
+            
+            current_len = xs.shape[1] # Length of sequences before adding current step's tokens
+            
+            fwd_semantic_valid_lengths = None
+            if self.dual_head_flag:
+                # Pass the current known actual semantic lengths.
+                # The forward function will use this to mask padding tokens within the semantic block of xs.
+                fwd_semantic_valid_lengths = actual_semantic_lengths.clone()
+
+            # current_input_for_transformer is xs. If xs is (B,0), forward handles it.
+            logits = self.forward(xs, clip_feature, semantic_valid_lengths=fwd_semantic_valid_lengths)
+            logits_cond = logits[0].unsqueeze(0)
+            logits_uncond = logits[1].unsqueeze(0)
+            logits = -2.5 * logits_uncond + 3.5 * logits_cond
+            # Get logits for the next token prediction
+            probs = F.softmax(logits[:, -1, :], dim=-1) 
+            
+            candidate_tokens = None
+            if if_categorial:
+                dist = Categorical(probs) # Probs: (B, V)
+                candidate_tokens = dist.sample() # Cand: (B,)
+            else:
+                _, candidate_tokens_topk = torch.topk(probs, k=1, dim=-1) # Cand_topk: (B, 1)
+                candidate_tokens = candidate_tokens_topk.squeeze(-1) # Cand: (B,)
+                
+            step_tokens = torch.zeros(B, dtype=torch.long, device=device)
+
+            for i in range(B):
+                if all_sequences_finished[i]:
+                    step_tokens[i] = self.num_vq + 1 # PAD token
+                    continue
+
+                token_i = candidate_tokens[i]
+                
+                if self.dual_head_flag:
+                    if currently_in_semantic_phase[i]:
+                        if semantic_phase_ended_flags[i]: # Semantic part already processed (either by EOS or filled len), PAD
+                            step_tokens[i] = self.num_vq + 1
+                        else: # Actively sampling/deciding for semantic part
+                            if token_i == self.num_vq: # Semantic EOS signal encountered
+                                semantic_phase_ended_flags[i] = True
+                                actual_semantic_lengths[i] = current_len # Record true semantic length before this EOS
+                                step_tokens[i] = self.num_vq + 1 # Append PAD token immediately
+                            else:
+                                step_tokens[i] = token_i
+                        
+                        # Check for phase transition due to length:
+                        # If, after appending this step's token, length becomes self.semantic_len
+                        if (current_len + 1) == self.semantic_len:
+                            currently_in_semantic_phase[i] = False # Switch phase for the *next* iteration
+                            if not semantic_phase_ended_flags[i]: # If not already ended by an EOS signal
+                                semantic_phase_ended_flags[i] = True # Mark semantic part as filled
+                                # actual_semantic_lengths[i] remains self.semantic_len (default or already set if EOS earlier)
+                    else: # Reconstruction phase for item i
+                        if token_i == self.num_vq: # Reconstruction EOS
+                            step_tokens[i] = self.num_vq # Append the actual EOS token
+                            all_sequences_finished[i] = True
+                        else:
+                            step_tokens[i] = token_i
+                else: # Original backup logic (not dual_head_flag)
+                    if token_i == self.num_vq: # EOS
+                        step_tokens[i] = self.num_vq
+                        all_sequences_finished[i] = True
+                    else:
+                        step_tokens[i] = token_i
+            
+            xs = torch.cat((xs, step_tokens.unsqueeze(-1)), dim=1)
+            
+        return xs
+
 class CausalCrossConditionalSelfAttention(nn.Module):
 
     def __init__(self, embed_dim=512, block_size=16, n_head=8, drop_out_rate=0.1):

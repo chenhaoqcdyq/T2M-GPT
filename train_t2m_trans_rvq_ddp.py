@@ -180,8 +180,8 @@ def main(rank, world_size, args):
         if rank == 0:
             print('loading transformer checkpoint from {}'.format(args.resume_trans))
         ckpt = torch.load(args.resume_trans, map_location=f'cuda:{rank}')
-        Residual_trans_encoder.load_state_dict(ckpt['Residual_trans_encoder'], strict=True)
-    
+        keys = Residual_trans_encoder.load_state_dict(ckpt['Residual_trans_encoder'], strict=False)
+        print(keys)
     Residual_trans_encoder = DDP(Residual_trans_encoder, device_ids=[rank], find_unused_parameters=True)
     Residual_trans_encoder.train()
 

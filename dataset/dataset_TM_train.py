@@ -58,7 +58,7 @@ class Text2MotionDataset(data.Dataset):
         self.tokenizer_name = tokenizer_name
         self.name_list = []
         self.data_dict = {}
-        
+        self.load_data(id_list) 
         # self.data_dict = data_dict
         # self.name_list = new_name_list
         

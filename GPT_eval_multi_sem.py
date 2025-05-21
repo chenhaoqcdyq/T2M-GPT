@@ -21,6 +21,13 @@ warnings.filterwarnings('ignore')
 args = option_trans.get_args_parser()
 torch.manual_seed(args.seed)
 
+path = os.path.dirname(args.resume_pth)
+trans_path = os.path.join(path, 'net_best_fid.pth')
+json_file = os.path.join(path, 'train_config.json')
+with open(json_file, 'r') as f:
+    train_args_dict = json.load(f)  # dict
+args = eval_trans.EasyDict(train_args_dict)
+
 exp_name = (args.resume_pth).replace('output/','')[:5]
 vq_name = f"VQVAE-T2MGPT-SEM-train-{exp_name}"
 print("vq_name = ", vq_name)
@@ -61,11 +68,13 @@ clip_model.eval()
 for p in clip_model.parameters():
     p.requires_grad = False
 
-path = os.path.dirname(args.resume_pth)
-json_file = os.path.join(path, 'train_config.json')
-with open(json_file, 'r') as f:
-    train_args_dict = json.load(f)  # dict
-args_vq = eval_trans.EasyDict(train_args_dict) 
+
+vq_path = args.resume_pth
+vq_model_path = os.path.join(os.path.dirname(vq_path), 'net_best_fid.pth')
+vq_json = os.path.join(os.path.dirname(vq_path), 'train_config.json')
+with open(vq_json, 'r') as f:
+    vq_args_dict = json.load(f)  # dict
+args_vq = eval_trans.EasyDict(vq_args_dict) 
 
 net = vqvae.HumanVQVAE(args_vq, ## use args to define different parameters in different quantizers
                        args_vq.nb_code,
@@ -82,11 +91,7 @@ net = vqvae.HumanVQVAE(args_vq, ## use args to define different parameters in di
                        lgvq=args_vq.lgvq,
                        causal=args_vq.causal if 'causal' in args_vq else 0)
 
-trans_path = os.path.dirname(args.resume_trans)
-json_file = os.path.join(trans_path, 'train_config.json')
-with open(json_file, 'r') as f:
-    train_args_dict = json.load(f)  # dict
-args_trans = eval_trans.EasyDict(train_args_dict) 
+
 if args_vq.lgvq == 1 and args.sample_way != 2:
     num_vq_trans = args.nb_code * 2 + 1
 elif args_vq.lgvq == 1 and args.sample_way == 2:
@@ -123,16 +128,15 @@ trans_encoder = trans.Text2Motion_Transformer(num_vq=num_vq_trans,
                                 dual_head_flag=(args.sample_way == 2))
 
 
-print ('loading checkpoint from {}'.format(args.resume_pth))
-ckpt = torch.load(args.resume_pth, map_location='cpu')
+print ('loading checkpoint from {}'.format(vq_model_path))
+ckpt = torch.load(vq_model_path, map_location='cpu')
 net.load_state_dict(ckpt['net'], strict=True)
 net.eval()
 net.cuda()
 
-if args.resume_trans is not None:
-    print ('loading transformer checkpoint from {}'.format(args.resume_trans))
-    ckpt = torch.load(args.resume_trans, map_location='cpu')
-    trans_encoder.load_state_dict(ckpt['trans'], strict=True)
+print ('loading transformer checkpoint from {}'.format(trans_path))
+ckpt = torch.load(trans_path, map_location='cpu')
+trans_encoder.load_state_dict(ckpt['trans'], strict=True)
 trans_encoder.eval()
 trans_encoder.cuda()
 
