@@ -309,7 +309,7 @@ def main(rank, world_size, args):
             else:
                 pred_all = torch.cat([cls_pred[i][:sem_tokens_len[i] + 1], cls_pred[i][semantic_len:semantic_len + m_tokens_len[i] + 1]], dim=0)
                 target_all = torch.cat([target[i][:sem_tokens_len[i] + 1], target[i][semantic_len:semantic_len + m_tokens_len[i] + 1]], dim=0)
-                loss_cls += loss_ce(pred_all, target_all) / bs
+                loss_cls += loss_ce(pred_all.reshape(-1, pred_all.shape[-1]), target_all.reshape(-1)) / bs
                 probs = torch.softmax(pred_all, dim=-1)
 
             if args.if_maxtest:
