@@ -154,7 +154,7 @@ Residual_trans_encoder = trans_rvq.Residual_encoder(trans_encoder,
                                                     residual_encoder=Residual_Transformer, 
                                                     embed_dim=args.embed_dim_gpt, 
                                                     num_vq=num_vq_trans, 
-                                                    semantic_flag=semantic_flag, 
+                                                    semantic_flag=(args.sample_way == 2), 
                                                     num_quantizers = args_vq.num_quantizers) 
 Residual_trans_encoder.cuda()
 Residual_trans_encoder.train()
@@ -258,7 +258,7 @@ while nb_iter <= args.total_iter:
         text = clip.tokenize(masked_text, truncate=True).cuda()
         
     feat_clip_text = clip_model.encode_text(text).float()
-
+    sampled_token = Residual_trans_encoder.sample(feat_clip_text, False)
     input_index = target[:, :, :-1]
 
     if args.pkeep == -1:

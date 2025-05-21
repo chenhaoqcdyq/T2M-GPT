@@ -103,8 +103,49 @@ def evaluation_vqvae(out_dir, val_loader, net, logger, writer, nb_iter, best_fid
             pose = val_loader.dataset.inv_transform(motion[i:i+1, :m_length[i], :].detach().cpu().numpy())
             pose_xyz = recover_from_ric(torch.from_numpy(pose).float().cuda(), num_joints)
 
-            result = net(motion[i:i+1, :m_length[i]])
-            pred_pose = result[0][:,0:m_length[i],:]
+            # result = net(motion[i:i+1, :m_length[i]])
+            index = net.encode(motion[i:i+1, :m_length[i]])
+            # result = net.forward_decoder(index)
+
+            codebook = net.vqvae.quantizer.codebook#codebook.shape:(512, 1024)
+            #取 codebook中index对应的就是对应的特征
+
+            p = 0.8 
+            mask = torch.bernoulli(p * torch.ones(index.shape,
+                                                         device=index.device))
+          
+            mask = mask.round().to(dtype=torch.int64) 
+            
+            # For indices where mask is 0 (the 1-p portion), find the most dissimilar codebook entry
+            # Extract the original features from codebook
+            original_features = codebook[index]
+            
+            # Calculate cosine similarity between each feature and all codebook entries
+            # For each original feature, find the most dissimilar codebook entry
+            dissimilar_indices = torch.zeros_like(index)
+            
+            for idx in range(index.shape[0]):
+                for t in range(index.shape[1]):
+                    if mask[idx, t] == 0:  # Only process where mask is 0
+                        # Get the original feature
+                        orig_feat = original_features[idx, t]
+                        
+                        # Calculate cosine similarity with all codebook entries
+                        similarity = torch.nn.functional.cosine_similarity(
+                            orig_feat.unsqueeze(0), 
+                            codebook, 
+                            dim=1
+                        )
+                        
+                        # Get the index of the most dissimilar entry (lowest similarity)
+                        dissimilar_idx = torch.argmin(similarity)
+                        dissimilar_indices[idx, t] = dissimilar_idx
+            
+            # Apply the mask: keep original indices where mask is 1, replace with dissimilar indices where mask is 0
+            a_indices = mask * index + (1 - mask) * dissimilar_indices
+            result = net.forward_decoder(a_indices)
+            
+            pred_pose = result[:,0:m_length[i],:]
             # pred_pose, loss_commit, perplexity = net(motion[i:i+1, :m_length[i]])
             pred_denorm = val_loader.dataset.inv_transform(pred_pose.detach().cpu().numpy())
             pred_xyz = recover_from_ric(torch.from_numpy(pred_denorm).float().cuda(), num_joints)
@@ -380,7 +421,7 @@ def evaluation_transformer(out_dir, val_loader, net, trans, logger, writer, nb_i
         logger.info(msg)
         best_top2 = R_precision[1]
     
-    if R_precision[2] > best_top3 : 
+    if R_precision[2] > best_top3 :
         msg = f"--> --> \t Top3 Improved from {best_top3:.4f} to {R_precision[2]:.4f} !!!"
         logger.info(msg)
         best_top3 = R_precision[2]
@@ -472,11 +513,7 @@ def evaluation_transformer_batch(out_dir, val_loader, net, trans, logger, writer
                 pred_pose = parts_pred_pose
                 cur_len = pred_pose.shape[1]
 
-                pred_len[k] = min(cur_len, seq)  # save the min len
-
-                # It's actually should use pred_len[k] to replace cur_len and seq for understanding convenience
-                #   Below code seems equal to use pred_len[k].
-                #   But should not change it to keep the same test code with T2M-GPT.
+                pred_len[k] = min(cur_len, seq)
                 pred_pose_eval[k:k+1, :cur_len] = pred_pose[:, :seq]
 
                 if draw:
@@ -600,7 +637,7 @@ def evaluation_transformer_batch(out_dir, val_loader, net, trans, logger, writer
     return best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger
 
 @torch.no_grad()        
-def evaluation_transformer_test(out_dir, val_loader, net, trans, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, best_multi, clip_model, eval_wrapper, draw = True, save = True, savegif=False, savenpy=False, semantic_flag=False, dual_head_flag=False, sample_cfg=False, mmod_gen_times=30) : 
+def evaluation_transformer_test(out_dir, val_loader, net, trans, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, best_multi, clip_model, eval_wrapper, draw = True, save = True, savegif=False, savenpy=False, semantic_flag=False, dual_head_flag=False, sample_cfg=False, mmod_gen_times=30, iters = 0) : 
 
     trans.eval()
     nb_sample = 0
@@ -620,6 +657,7 @@ def evaluation_transformer_test(out_dir, val_loader, net, trans, logger, writer,
     matching_score_pred = 0
 
     nb_sample = 0
+    iters_count = 0
     
     for batch in tqdm(val_loader):
 
@@ -639,27 +677,39 @@ def evaluation_transformer_test(out_dir, val_loader, net, trans, logger, writer,
             pred_pose_eval = torch.zeros((bs, seq, pose.shape[-1])).cuda()
             pred_len = torch.ones(bs).long()
             
-            for k in range(1):
-                try:
-                    if sample_cfg:
-                        text_cond_uncond = torch.cat([feat_clip_text[k:k+1], uncond_feat.unsqueeze(0)], dim=0)
-                        index_motion = trans.sample_cfg(text_cond_uncond, True)
+            for k in range(bs):
+                # try:
+                if sample_cfg:
+                    text_cond_uncond = torch.cat([feat_clip_text[k:k+1], uncond_feat], dim=0)
+                    index_motion = trans.sample_cfg(text_cond_uncond, True)
+                    index_motion = index_motion[0:1]
+                    max_motion_seq_len = index_motion.shape[1]
+                    idx = torch.nonzero(index_motion == trans.num_vq)
+                    if idx.numel() == 0:
+                        motion_seq_len = max_motion_seq_len
                     else:
-                        index_motion = trans.sample(feat_clip_text[k:k+1], False)
-                except:
-                    index_motion = torch.ones(1,4).cuda().long()
+                        min_end_idx = idx[:,1].min()
+                        motion_seq_len = min_end_idx
+                    index_motion = index_motion[:, :motion_seq_len]
+                else:
+                    index_motion = trans.sample(feat_clip_text[k:k+1], False)
+                # except:
+                #     index_motion = torch.ones(1,4).cuda().long()
                 if semantic_flag:
                     index_motion = index_motion[index_motion >= 513] - 513
-                    if index_motion.shape[0] == 0:
+                    if 0 in index_motion.shape:
+                        print("index_motion.shape == 0", index_motion.shape)
                         index_motion = torch.ones(1,4).cuda().long()
                     pred_pose = net.forward_decoder(index_motion)
                 elif dual_head_flag:
                     index_motion = index_motion[..., trans.semantic_len:]
-                    if index_motion.shape[0] == 0:
+                    if 0 in index_motion.shape:
+                        print("index_motion.shape == 0", index_motion.shape)
                         index_motion = torch.ones(1,4).cuda().long()
                     pred_pose = net.forward_decoder(index_motion)
                 else:
-                    if index_motion.shape[0] == 0:
+                    if 0 in index_motion.shape:
+                        print("index_motion.shape == 0", index_motion.shape)
                         index_motion = torch.ones(1,4).cuda().long()
                     pred_pose = net.forward_decoder(index_motion)
                 cur_len = pred_pose.shape[1]
@@ -719,8 +769,12 @@ def evaluation_transformer_test(out_dir, val_loader, net, trans, logger, writer,
                 matching_score_pred += temp_match
 
                 nb_sample += bs
-
+        
         motion_multimodality.append(torch.cat(motion_multimodality_batch, dim=1))
+        iters_count += 1
+        if iters != 0 and iters_count >= iters:
+            print("iters_count:", iters_count)
+            break
 
     motion_annotation_np = torch.cat(motion_annotation_list, dim=0).cpu().numpy()
     motion_pred_np = torch.cat(motion_pred_list, dim=0).cpu().numpy()
@@ -759,7 +813,7 @@ def evaluation_transformer_test(out_dir, val_loader, net, trans, logger, writer,
     return fid, best_iter, diversity, R_precision[0], R_precision[1], R_precision[2], matching_score_pred, multimodality, writer, logger
 
 @torch.no_grad()
-def evaluation_transformer_test_batch(out_dir, val_loader, net, trans, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, best_multi, clip_model, eval_wrapper, draw = True, save = True, savegif=False, savenpy=False, mmod_gen_times=30, skip_mmod=False, dual_head_flag=False):
+def evaluation_transformer_test_batch(out_dir, val_loader, net, trans, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, best_multi, clip_model, eval_wrapper, draw = True, save = True, savegif=False, savenpy=False, mmod_gen_times=30, skip_mmod=False, dual_head_flag=False, sample_cfg=False):
 
     trans.eval()
 
@@ -793,14 +847,20 @@ def evaluation_transformer_test_batch(out_dir, val_loader, net, trans, logger, w
         text = clip.tokenize(clip_text, truncate=True).cuda()
 
         feat_clip_text = clip_model.encode_text(text).float()
+        if sample_cfg:
+            uncond_feat = clip_model.encode_text(clip.tokenize('', truncate=True).cuda()).float()
+            uncond_feat = uncond_feat.repeat(bs, 1)
+            feat_clip_text = torch.cat([feat_clip_text, uncond_feat], dim=0)
         motion_multimodality_batch = []
         for i in range(mmod_gen_times):  # mmod_gen_times default: 30
             pred_pose_eval = torch.zeros((bs, seq, pose.shape[-1])).cuda()
             pred_len = torch.ones(bs).long()
-
-            # [Text-to-motion Generation] get generated parts' token sequence
-            # get parts_index_motion given the feat_clip_text
-            batch_parts_index_motion = trans.sample_batch(feat_clip_text, False)  # List: [(B, seq_len), ..., (B, seq_len)]
+            if sample_cfg:
+                batch_parts_index_motion = trans.sample_cfg_batch_with_empty(feat_clip_text, True)
+            else:
+                # [Text-to-motion Generation] get generated parts' token sequence
+                # get parts_index_motion given the feat_clip_text
+                batch_parts_index_motion = trans.sample_batch(feat_clip_text, True)  # List: [(B, seq_len), ..., (B, seq_len)]
             if dual_head_flag:
                 batch_parts_index_motion = batch_parts_index_motion[..., trans.semantic_len:]
 
@@ -836,11 +896,12 @@ def evaluation_transformer_test_batch(out_dir, val_loader, net, trans, logger, w
 
                 # Truncate
                 # for j in range(len(parts_index_motion)):
-                if min_motion_seq_len == 0:
+                if min_motion_seq_len <= 3:
                     parts_index_motion = torch.ones(1,4).cuda().long()  # (B, seq_len) B==1, seq_len==1
-                elif min_motion_seq_len <= 3:
-                    # assign a nonsense motion index to handle length is 0 issue.
-                    parts_index_motion = torch.cat([part_index[:,:min_motion_seq_len], torch.ones(1,4-min_motion_seq_len).cuda().long()], dim=1)
+                    print("min_motion_seq_len <= 3", min_motion_seq_len)
+                # elif min_motion_seq_len <= 3:
+                #     # assign a nonsense motion index to handle length is 0 issue.
+                #     parts_index_motion = torch.cat([part_index[:,:min_motion_seq_len], torch.ones(1,4-min_motion_seq_len).cuda().long()], dim=1)
                 else:
                     parts_index_motion = part_index[:,:min_motion_seq_len]
 

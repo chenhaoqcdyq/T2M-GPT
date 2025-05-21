@@ -81,16 +81,20 @@ top2 = []
 top3 = []
 matching = []
 best_mpjpe_list = []
-repeat_time = 20
+repeat_time = 5
 for i in range(repeat_time):
-    best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger, best_mpjpe = eval_trans.evaluation_vqvae(args.out_dir, val_loader, net, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, eval_wrapper=eval_wrapper, draw=False, save=False, savenpy=(i==0), best_mpjpe=100)
+    best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger, best_mpjpe = eval_trans.evaluation_vqvae(args.out_dir, val_loader, net, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, eval_wrapper=eval_wrapper, draw=False, save=False, savenpy=(i==0), best_mpjpe=1e9)
     fid.append(best_fid)
     div.append(best_div)
     top1.append(best_top1)
     top2.append(best_top2)
     top3.append(best_top3)
     matching.append(best_matching)
-    best_mpjpe_list.append(best_mpjpe.cpu().numpy())
+    # Handle both tensor and int/float cases
+    if isinstance(best_mpjpe, torch.Tensor):
+        best_mpjpe_list.append(best_mpjpe.cpu().numpy())
+    else:
+        best_mpjpe_list.append(best_mpjpe)
 print('final result:')
 print('fid: ', sum(fid)/repeat_time)
 print('div: ', sum(div)/repeat_time)

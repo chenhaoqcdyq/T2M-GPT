@@ -531,21 +531,22 @@ class Text2Motion_Transformer(nn.Module):
             logits = self.forward(xs, clip_feature, semantic_valid_lengths=fwd_semantic_valid_lengths)
             logits_cond = logits[0].unsqueeze(0)
             logits_uncond = logits[1].unsqueeze(0)
-            logits = -2.5 * logits_uncond + 3.5 * logits_cond
+            logits = -6.5 * logits_uncond + 7.5 * logits_cond
             # Get logits for the next token prediction
             probs = F.softmax(logits[:, -1, :], dim=-1) 
             
             candidate_tokens = None
             if if_categorial:
-                dist = Categorical(probs) # Probs: (B, V)
-                candidate_tokens = dist.sample() # Cand: (B,)
+                # dist = Categorical(probs) # Probs: (B, V)
+                # candidate_tokens = dist.sample() # Cand: (B,)
+                candidate_tokens = sample_from_logits(logits, top_k=0, top_p=0.96)
             else:
                 _, candidate_tokens_topk = torch.topk(probs, k=1, dim=-1) # Cand_topk: (B, 1)
                 candidate_tokens = candidate_tokens_topk.squeeze(-1) # Cand: (B,)
                 
             step_tokens = torch.zeros(B, dtype=torch.long, device=device)
 
-            for i in range(B):
+            for i in range(1):
                 if all_sequences_finished[i]:
                     step_tokens[i] = self.num_vq + 1 # PAD token
                     continue
@@ -583,10 +584,313 @@ class Text2Motion_Transformer(nn.Module):
                         all_sequences_finished[i] = True
                     else:
                         step_tokens[i] = token_i
-            
+            step_tokens[1] = step_tokens[0]
             xs = torch.cat((xs, step_tokens.unsqueeze(-1)), dim=1)
             
         return xs
+    
+    def sample_cfg_batch(self, clip_feature, if_categorial=False):
+        # B = 2, [cond, uncond]
+        B = clip_feature.shape[0]
+        device = clip_feature.device
+        xs = torch.empty((B, 0), dtype=torch.long, device=device)
+        all_sequences_finished = torch.zeros(B, dtype=torch.bool, device=device)
+
+        if self.dual_head_flag:
+            semantic_phase_ended_flags = torch.zeros(B, dtype=torch.bool, device=device)
+            # actual_semantic_lengths stores the true length of semantic content for each item.
+            # Initialized to self.semantic_len, assuming full semantic part unless ended early by EOS signal.
+            actual_semantic_lengths = torch.full((B,), self.semantic_len, dtype=torch.long, device=device)
+            currently_in_semantic_phase = torch.ones(B, dtype=torch.bool, device=device)
+        
+        for loop_idx in range(self.block_size):
+            if all_sequences_finished.all():
+                break
+            
+            current_len = xs.shape[1] # Length of sequences before adding current step's tokens
+            
+            fwd_semantic_valid_lengths = None
+            if self.dual_head_flag:
+                # Pass the current known actual semantic lengths.
+                # The forward function will use this to mask padding tokens within the semantic block of xs.
+                fwd_semantic_valid_lengths = actual_semantic_lengths.clone()
+
+            # current_input_for_transformer is xs. If xs is (B,0), forward handles it.
+            logits = self.forward(xs, clip_feature, semantic_valid_lengths=fwd_semantic_valid_lengths)
+            logits_cond = logits[0].unsqueeze(0)
+            logits_uncond = logits[1].unsqueeze(0)
+            logits = -6.5 * logits_uncond + 7.5 * logits_cond
+            # Get logits for the next token prediction
+            probs = F.softmax(logits[:, -1, :], dim=-1) 
+            
+            candidate_tokens = None
+            if if_categorial:
+                # dist = Categorical(probs) # Probs: (B, V)
+                # candidate_tokens = dist.sample() # Cand: (B,)
+                candidate_tokens = sample_from_logits(logits, top_k=0, top_p=0.96)
+            else:
+                _, candidate_tokens_topk = torch.topk(probs, k=1, dim=-1) # Cand_topk: (B, 1)
+                candidate_tokens = candidate_tokens_topk.squeeze(-1) # Cand: (B,)
+                
+            step_tokens = torch.zeros(B, dtype=torch.long, device=device)
+
+            for i in range(1):
+                if all_sequences_finished[i]:
+                    step_tokens[i] = self.num_vq + 1 # PAD token
+                    continue
+
+                token_i = candidate_tokens[i]
+                
+                if self.dual_head_flag:
+                    if currently_in_semantic_phase[i]:
+                        if semantic_phase_ended_flags[i]: # Semantic part already processed (either by EOS or filled len), PAD
+                            step_tokens[i] = self.num_vq + 1
+                        else: # Actively sampling/deciding for semantic part
+                            if token_i == self.num_vq: # Semantic EOS signal encountered
+                                semantic_phase_ended_flags[i] = True
+                                actual_semantic_lengths[i] = current_len # Record true semantic length before this EOS
+                                step_tokens[i] = self.num_vq + 1 # Append PAD token immediately
+                            else:
+                                step_tokens[i] = token_i
+                        
+                        # Check for phase transition due to length:
+                        # If, after appending this step's token, length becomes self.semantic_len
+                        if (current_len + 1) == self.semantic_len:
+                            currently_in_semantic_phase[i] = False # Switch phase for the *next* iteration
+                            if not semantic_phase_ended_flags[i]: # If not already ended by an EOS signal
+                                semantic_phase_ended_flags[i] = True # Mark semantic part as filled
+                                # actual_semantic_lengths[i] remains self.semantic_len (default or already set if EOS earlier)
+                    else: # Reconstruction phase for item i
+                        if token_i == self.num_vq: # Reconstruction EOS
+                            step_tokens[i] = self.num_vq # Append the actual EOS token
+                            all_sequences_finished[i] = True
+                        else:
+                            step_tokens[i] = token_i
+                else: # Original backup logic (not dual_head_flag)
+                    if token_i == self.num_vq: # EOS
+                        step_tokens[i] = self.num_vq
+                        all_sequences_finished[i] = True
+                    else:
+                        step_tokens[i] = token_i
+            step_tokens[1] = step_tokens[0]
+            xs = torch.cat((xs, step_tokens.unsqueeze(-1)), dim=1)
+            
+        return xs
+
+    def sample_cfg_batch_with_empty(self, clip_feature, if_categorial=False, cfg_scale=7.5):
+        """
+        批量条件引导采样函数，支持一批次中一半是有文本特征，一半是空字符串特征的情况
+        
+        参数:
+            clip_feature: 形状为 [batch_size, clip_dim] 的文本特征
+                          其中前半部分是正常文本特征，后半部分是空字符串特征
+            if_categorial: 是否使用分类采样
+            cfg_scale: CFG引导强度，正值越大引导越强，推荐范围 5.0-10.0
+        
+        返回:
+            生成的动作token序列，形状为 [batch_size/2, seq_len]
+        """
+        # 假设输入的clip_feature已经是[cond1, cond2, ..., uncond1, uncond2, ...]的形式
+        # 前半部分是条件文本特征，后半部分是无条件（空文本）特征
+        full_batch_size = clip_feature.shape[0]
+        assert full_batch_size % 2 == 0, "批次大小必须是偶数，一半条件一半无条件"
+        
+        half_batch_size = full_batch_size // 2
+        device = clip_feature.device
+        
+        # 创建空序列开始生成
+        xs = torch.empty((full_batch_size, 0), dtype=torch.long, device=device)
+        all_sequences_finished = torch.zeros(full_batch_size, dtype=torch.bool, device=device)
+        
+        # 双头标志处理
+        if self.dual_head_flag:
+            semantic_phase_ended_flags = torch.zeros(full_batch_size, dtype=torch.bool, device=device)
+            actual_semantic_lengths = torch.full((full_batch_size,), self.semantic_len, dtype=torch.long, device=device)
+            currently_in_semantic_phase = torch.ones(full_batch_size, dtype=torch.bool, device=device)
+        
+        # 自回归生成token序列
+        for loop_idx in range(self.block_size):
+            if all_sequences_finished[:half_batch_size].all():  # 只检查前半部分（有效条件）
+                break
+            
+            current_len = xs.shape[1]  # 当前序列长度
+            
+            # 准备语义长度信息（对于dual_head模型）
+            fwd_semantic_valid_lengths = None
+            if self.dual_head_flag:
+                fwd_semantic_valid_lengths = actual_semantic_lengths.clone()
+            
+            # 前向传播获取logits
+            logits = self.forward(xs, clip_feature, semantic_valid_lengths=fwd_semantic_valid_lengths)
+            
+            # 分割条件和无条件logits
+            cond_logits = logits[:half_batch_size]     # 条件部分logits [half_bs, seq_len, vocab_size]
+            uncond_logits = logits[half_batch_size:]   # 无条件部分logits [half_bs, seq_len, vocab_size]
+            
+            # 对每个条件样本单独应用CFG
+            step_tokens = torch.zeros(full_batch_size, dtype=torch.long, device=device)
+            
+            for i in range(half_batch_size):
+                if all_sequences_finished[i]:
+                    step_tokens[i] = self.num_vq + 1  # PAD token
+                    step_tokens[i + half_batch_size] = self.num_vq + 1  # 对应的无条件部分也设为PAD
+                    continue
+                
+                # 获取当前token的logits并应用CFG
+                cond_token_logits = cond_logits[i, :]
+                uncond_token_logits = uncond_logits[i, :]
+                
+                # CFG公式: logits = uncond_logits + cfg_scale * (cond_logits - uncond_logits)
+                cfg_logits = uncond_token_logits + cfg_scale * (cond_token_logits - uncond_token_logits)
+                
+                # 从logits获取候选token
+                if if_categorial:
+                    cfg_logits_expanded = cfg_logits.unsqueeze(0)  # [1, vocab_size]
+                    token_i = sample_from_logits(cfg_logits_expanded, top_k=0, top_p=0.96, temperature=0.9)[0]
+                else:
+                    _, candidate_token = torch.topk(cfg_logits, k=1)
+                    token_i = candidate_token.item()
+                
+                # 根据双头标志或普通模式处理token
+                if self.dual_head_flag:
+                    if currently_in_semantic_phase[i]:
+                        if semantic_phase_ended_flags[i]:  # 语义部分已处理完
+                            step_tokens[i] = self.num_vq + 1  # PAD
+                        else:  # 正在处理语义部分
+                            if token_i == self.num_vq:  # 遇到EOS标记
+                                semantic_phase_ended_flags[i] = True
+                                actual_semantic_lengths[i] = current_len
+                                step_tokens[i] = self.num_vq + 1  # 立即添加PAD
+                            else:
+                                step_tokens[i] = token_i
+                    
+                        # 检查是否因长度转换阶段
+                        if (current_len + 1) == self.semantic_len:
+                            currently_in_semantic_phase[i] = False  # 下一轮迭代切换阶段
+                            if not semantic_phase_ended_flags[i]:
+                                semantic_phase_ended_flags[i] = True
+                    else:  # 重建阶段
+                        if token_i == self.num_vq:  # 重建EOS
+                            step_tokens[i] = self.num_vq
+                            all_sequences_finished[i] = True
+                        else:
+                            step_tokens[i] = token_i
+                else:  # 原始逻辑
+                    if token_i == self.num_vq:  # EOS
+                        step_tokens[i] = self.num_vq
+                        all_sequences_finished[i] = True
+                    else:
+                        step_tokens[i] = token_i
+                
+                # 为无条件部分设置相同的token（仅用于保持一致性，不影响输出）
+                step_tokens[i + half_batch_size] = step_tokens[i]
+            
+            # 将生成的token添加到序列中
+            xs = torch.cat((xs, step_tokens.unsqueeze(-1)), dim=1)
+        
+        # 只返回条件部分的结果
+        return xs[:half_batch_size]
+
+    def sample_with_rejection(self, clip_feature, num_samples=5, if_categorial=False, temperature=1.0, cfg_scale=7.5, use_cfg=True):
+        """
+        使用拒绝采样策略生成多个样本并选择最佳样本
+        
+        参数:
+            clip_feature: 文本特征 [batch_size, clip_dim]
+            num_samples: 为每个输入生成的样本数量
+            if_categorial: 是否使用分类采样
+            temperature: 采样温度，越高多样性越大
+            cfg_scale: CFG引导强度
+            use_cfg: 是否使用CFG
+            
+        返回:
+            最佳token序列 [batch_size, seq_len]
+        """
+        device = clip_feature.device
+        batch_size = clip_feature.shape[0]
+        
+        # 为拒绝采样准备空文本特征
+        if use_cfg:
+            # 生成空文本特征（可以根据实际情况修改）
+            empty_feature = torch.zeros_like(clip_feature)
+        
+        all_sequences = []
+        
+        # 为每个输入生成多个样本
+        for i in range(num_samples):
+            if use_cfg:
+                # 将条件和无条件特征拼接
+                combined_feature = torch.cat([clip_feature, empty_feature], dim=0)
+                # 使用CFG采样
+                tokens = self.sample_cfg_batch_with_empty(combined_feature, if_categorial, cfg_scale)
+            else:
+                # 使用普通采样
+                tokens = self.sample_batch(clip_feature, if_categorial=(temperature > 0))
+            
+            all_sequences.append(tokens)
+        
+        # TODO: 实现选择最佳样本的逻辑，这需要根据特定标准评估样本质量
+        # 为简单起见，这里只返回第一个样本，实际应用中应替换为质量评估和选择逻辑
+        best_sequences = all_sequences[0]
+        
+        return best_sequences
+
+def top_k_top_p_filtering(
+    logits,
+    top_k: int = 0,
+    top_p: float = 1.0,
+    filter_value: float = -float("Inf"),
+    min_tokens_to_keep: int = 1,
+):
+    """Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
+    Args:
+        logits: logits distribution shape (batch size, vocabulary size)
+        if top_k > 0: keep only top k tokens with highest probability (top-k filtering).
+        if top_p < 1.0: keep the top tokens with cumulative probability >= top_p (nucleus filtering).
+            Nucleus filtering is described in Holtzman et al. (http://arxiv.org/abs/1904.09751)
+        Make sure we keep at least min_tokens_to_keep per batch example in the output
+    From: https://gist.github.com/thomwolf/1a5a29f6962089e871b94cbd09daf317
+    """
+    if top_k > 0:
+        top_k = min(max(top_k, min_tokens_to_keep), logits.size(-1))  # Safety check
+        # Remove all tokens with a probability less than the last token of the top-k
+        indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+        logits[indices_to_remove] = filter_value
+
+    if top_p < 1.0:
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+
+        # Remove tokens with cumulative probability above the threshold (token with 0 are kept)
+        sorted_indices_to_remove = cumulative_probs > top_p
+        if min_tokens_to_keep > 1:
+            # Keep at least min_tokens_to_keep (set to min_tokens_to_keep-1 because we add the first one below)
+            sorted_indices_to_remove[..., :min_tokens_to_keep] = 0
+        # Shift the indices to the right to keep also the first token above the threshold
+        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+        sorted_indices_to_remove[..., 0] = 0
+
+        # scatter sorted tensors to original indexing
+        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+        logits[indices_to_remove] = filter_value
+    return logits
+
+
+
+def sample_from_logits(logits, temperature=1.0, top_k=None, top_p=None, sample_logits=True):
+    logits = logits[:, -1, :] / temperature
+    if top_k is not None or top_p is not None:
+        if top_k > 0 or top_p < 1.0:
+            logits = top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
+    
+    probs = F.softmax(logits, dim=-1)
+
+    if not sample_logits:
+        _, x = top_k(probs, k=1, dim=-1)
+    else:
+        x = torch.multinomial(probs, num_samples=1)
+
+    return x
 
 class CausalCrossConditionalSelfAttention(nn.Module):
 

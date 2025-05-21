@@ -25,6 +25,7 @@ class Residual_encoder(nn.Module):
         self.semantic_flag = semantic_flag
         self.clip_emb = nn.ModuleList([nn.Linear(clip_dim, embed_dim) for _ in range(num_quantizers)])
         # self.token_emb = nn.Linear(num_vq + 1, embed_dim)
+        self.embed_dim = embed_dim
         if self.semantic_flag:
             self.sem_tok_emb = nn.ModuleList([nn.Embedding(num_vq + 2, embed_dim) for _ in range(num_quantizers)])
             self.sem_len = t2m_encoder.semantic_len
@@ -62,6 +63,297 @@ class Residual_encoder(nn.Module):
         cls_pred = rearrange(residual_cls_pred, '(b l) p c -> b l p c', b=bs, l=L)
 
         return cls_pred
+
+    def sample(self, clip_feature, if_categorial=False, cfg_scale=7.5, use_cfg=False):
+        """
+        自回归生成残差索引，按时间步和层次顺序生成
+        
+        参数:
+            clip_feature: 文本特征 [batch_size, clip_dim]
+            if_categorial: 是否使用分类采样
+            cfg_scale: CFG引导强度，仅在use_cfg=True时使用
+            use_cfg: 是否使用条件引导生成
+            
+        返回:
+            生成的token序列 [batch_size, num_quantizers, seq_len]
+        """
+        device = clip_feature.device
+        batch_size = clip_feature.shape[0]
+        
+        # 初始化所有量化器的token序列
+        max_seq_len = self.t2m_encoder.block_size
+        all_tokens = torch.zeros(batch_size, self.num_quantizers, max_seq_len, dtype=torch.long, device=device)
+        
+        # 记录序列是否结束的标志
+        all_sequences_finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        
+        # 当前序列长度
+        current_seq_len = 0
+        
+        # 记录语义部分的有效长度（如果启用语义标志）
+        semantic_valid_lengths = None
+        if self.semantic_flag:
+            semantic_valid_lengths = torch.full((batch_size,), self.sem_len, dtype=torch.long, device=device)
+            # 获取语义和重建token的分界点
+            _assumed_codebook_part_size = (self.t2m_encoder.num_vq - 1) // 2
+            semantic_token_end_idx = _assumed_codebook_part_size - 1
+            separator_token_idx = _assumed_codebook_part_size
+            reconstruction_token_start_idx = _assumed_codebook_part_size + 1
+        
+        # 逐时间步生成
+        while current_seq_len < max_seq_len and not all_sequences_finished.all():
+            # 准备当前时间步的输入
+            if current_seq_len == 0:
+                # 第一个时间步，没有历史token
+                xs = torch.empty((batch_size, 0, self.embed_dim), dtype=torch.long, device=device)
+            else:
+                # 使用之前生成的第一层token作为输入
+                if self.semantic_flag and current_seq_len < self.sem_len:
+                    xs = self.sem_tok_emb[0](all_tokens[:, 0, :current_seq_len])
+                elif self.semantic_flag and current_seq_len >= self.sem_len:
+                    xs = torch.cat([self.sem_tok_emb[0](all_tokens[:, 0, :self.sem_len]), self.tok_emb[0](all_tokens[:, 0, self.sem_len:current_seq_len])], dim=1)
+                else:
+                    xs = self.tok_emb[0](all_tokens[:, 0, :current_seq_len])
+            
+            # 1. 使用t2m_encoder生成当前时间步的特征
+            first_quantizer_features = self.t2m_encoder(xs, clip_feature, semantic_valid_lengths)
+            first_quantizer_features = first_quantizer_features.contiguous()
+            
+            # 只取最后一个时间步的特征用于预测当前时间步的token
+            bs, L, D = first_quantizer_features.shape
+            last_step_feature = first_quantizer_features[:, -1:, :]  # [B, 1, D]
+            
+            # 2. 重塑为residual_encoder所需的输入格式，参考forward函数
+            first_quantizer_features_reshaped = rearrange(last_step_feature, 'b l c -> (b l) c').unsqueeze(1)
+            
+            # 3. 逐层生成当前时间步的token
+            for layer_idx in range(self.num_quantizers):
+                # 准备当前层的输入
+                if layer_idx == 0:
+                    # 第一层
+                    # 添加CLIP特征
+                    clip_emb = self.clip_emb[layer_idx](clip_feature).unsqueeze(1)
+                    
+                    # 构建feature_a_indices_wclip
+                    feature_a_indices_wclip = torch.stack([clip_emb], dim=1)  # [B, 1, 1, D]
+                    
+                    # 合并输入
+                    residual_input = torch.cat([
+                        first_quantizer_features_reshaped,  # [(B*1), 1, D]
+                        rearrange(feature_a_indices_wclip, 'b p l c -> (b l) p c')  # [(B*1), 1, D]
+                    ], dim=1)
+                    
+                    # 累积求和
+                    residual_input = torch.cumsum(residual_input[:, :1, :], dim=1)
+                else:
+                    # 获取当前时间步已生成的层的token
+                    current_step_tokens = all_tokens[:, :layer_idx, current_seq_len]  # [B, layer_idx]
+                    
+                    # 嵌入这些token
+                    current_step_embeds = []
+                    for l in range(layer_idx):
+                        # 根据当前是否在语义部分选择不同的嵌入
+                        if self.semantic_flag and current_seq_len < self.sem_len:
+                            # 语义部分使用语义嵌入
+                            token_emb = self.sem_tok_emb[l](current_step_tokens[:, l]).unsqueeze(1)  # [B, 1, D]
+                        else:
+                            # 重建部分使用普通嵌入
+                            token_emb = self.tok_emb[l](current_step_tokens[:, l]).unsqueeze(1)  # [B, 1, D]
+                        current_step_embeds.append(token_emb)
+                    
+                    # 添加CLIP特征
+                    clip_emb = self.clip_emb[layer_idx](clip_feature).unsqueeze(1)  # [B, 1, D]
+                    
+                    # 合并所有特征
+                    feature_list = [clip_emb] + current_step_embeds  # [[B, 1, D], ...]
+                    feature_a_indices_wclip = torch.stack(feature_list, dim=1)  # [B, layer_idx+1, 1, D]
+                    
+                    # 合并输入
+                    residual_input = torch.cat([
+                        first_quantizer_features_reshaped,  # [(B*1), 1, D]
+                        rearrange(feature_a_indices_wclip, 'b p l c -> (b l) p c')  # [(B*1), layer_idx+1, D]
+                    ], dim=1)
+                    
+                    # 累积求和
+                    residual_input = torch.cumsum(residual_input[:, :layer_idx+1, :], dim=1)
+                
+                # 4. 使用residual_encoder预测
+                residual_cls_pred = self.residual_encoder(residual_input)  # [(B*1), layer_idx, vocab_size]
+                
+                # 5. 获取当前层的logits
+                logits = residual_cls_pred[:, -1, :]  # [(B*1), vocab_size]
+                
+                # 6. 如果启用语义标志，根据当前位置修改logits
+                if self.semantic_flag and layer_idx == 0:  # 只对第一层进行处理
+                    if current_seq_len < self.sem_len:
+                        # 在语义部分，屏蔽重建token和EOS
+                        logits[:, reconstruction_token_start_idx:] = float('-inf')
+                        
+                        # 检查是否到达语义部分末尾
+                        if current_seq_len == self.sem_len - 1:
+                            # 在语义部分最后一个位置，强制使用分隔符
+                            logits[:, :] = float('-inf')
+                            logits[:, separator_token_idx] = 0.0
+                    else:
+                        # 在重建部分，屏蔽语义token和分隔符
+                        logits[:, :reconstruction_token_start_idx+1] = float('-inf')
+                
+                # 7. 对logits进行采样
+                if if_categorial:
+                    probs = F.softmax(logits, dim=-1)
+                    dist = torch.distributions.Categorical(probs)
+                    token = dist.sample()  # [(B*1)]
+                else:
+                    _, token = torch.topk(logits, k=1, dim=-1)
+                    token = token.squeeze(-1)  # [(B*1)]
+                
+                # 8. 保存当前层的token
+                all_tokens[:, layer_idx, current_seq_len] = token
+                
+                # 9. 如果是第一层，检查是否有序列结束或更新语义有效长度
+                if layer_idx == 0:
+                    for i in range(batch_size):
+                        # 检查是否结束序列
+                        if token[i] == self.t2m_encoder.num_vq:  # EOS token
+                            all_sequences_finished[i] = True
+                        
+                        # 如果在语义部分且启用了语义标志，更新语义有效长度
+                        if self.semantic_flag and current_seq_len < self.sem_len:
+                            # 如果生成了EOS或分隔符，更新语义有效长度
+                            if token[i] == self.t2m_encoder.num_vq or token[i] == separator_token_idx:
+                                semantic_valid_lengths[i] = current_seq_len + 1
+            
+            # 更新序列长度
+            current_seq_len += 1
+        
+        # 返回生成的token序列，截取到实际生成的长度
+        return all_tokens[:, :, :current_seq_len]
+
+    def sample_batch_with_cfg(self, clip_feature, if_categorial=False, cfg_scale=7.5):
+        """
+        批量条件引导采样函数，支持一批次中一半是有文本特征，一半是空字符串特征的情况
+        
+        参数:
+            clip_feature: 形状为 [batch_size, clip_dim] 的文本特征
+                          其中前半部分是正常文本特征，后半部分是空字符串特征
+            if_categorial: 是否使用分类采样
+            cfg_scale: CFG引导强度，正值越大引导越强，推荐范围 5.0-10.0
+            
+        返回:
+            生成的token序列 [batch_size/2, num_quantizers, seq_len]
+        """
+        # 假设输入的clip_feature已经是[cond1, cond2, ..., uncond1, uncond2, ...]的形式
+        full_batch_size = clip_feature.shape[0]
+        assert full_batch_size % 2 == 0, "批次大小必须是偶数，一半条件一半无条件"
+        
+        half_batch_size = full_batch_size // 2
+        device = clip_feature.device
+        
+        # 首先使用t2m_encoder生成第一层量化器的token序列
+        first_layer_tokens = self.t2m_encoder.sample_cfg_batch_with_empty(clip_feature, if_categorial, cfg_scale)
+        
+        # 获取序列长度
+        seq_len = first_layer_tokens.shape[1]
+        
+        # 初始化所有量化器的token序列
+        all_tokens = torch.zeros(half_batch_size, self.num_quantizers, seq_len, dtype=torch.long, device=device)
+        # 设置第一层量化器的token序列
+        all_tokens[:, 0, :] = first_layer_tokens
+        
+        # 分离条件和无条件特征
+        cond_features = clip_feature[:half_batch_size]
+        uncond_features = clip_feature[half_batch_size:]
+        
+        # 记录语义部分的有效长度（如果启用语义标志）
+        semantic_valid_lengths = None
+        if self.semantic_flag:
+            semantic_valid_lengths = torch.full((half_batch_size,), self.sem_len, dtype=torch.long, device=device)
+            # 检查是否有提前结束的语义部分
+            for b in range(half_batch_size):
+                for t in range(min(self.sem_len, seq_len)):
+                    if first_layer_tokens[b, t] == self.t2m_encoder.num_vq:  # 检测到结束标记
+                        semantic_valid_lengths[b] = t
+                        break
+        
+        # 逐时间步生成剩余量化器的token
+        for t in range(seq_len):
+            # 为每个时间步t逐层生成token（从第2层开始，因为第1层已经由t2m_encoder生成）
+            for layer_idx in range(1, self.num_quantizers):
+                # 准备当前已生成的token序列作为条件
+                # 提取到当前时间步t的所有已生成token
+                current_tokens = all_tokens[:, :layer_idx, :t+1]  # [B/2, layer_idx, t+1]
+                
+                # 为当前层创建嵌入特征
+                feature_list = []
+                for i in range(layer_idx):
+                    if self.semantic_flag and i == 0:  # 第一层使用语义嵌入
+                        # 处理语义部分，需要考虑padding
+                        if t < self.sem_len:  # 在语义部分范围内
+                            layer_emb = self.sem_tok_emb[i](current_tokens[:, i, :])
+                        else:  # 超出语义部分，使用普通嵌入
+                            layer_emb = self.tok_emb[i](current_tokens[:, i, :])
+                    else:
+                        layer_emb = self.tok_emb[i](current_tokens[:, i, :])
+                    feature_list.append(layer_emb)
+                
+                # 将所有层的嵌入特征合并
+                combined_features = torch.stack(feature_list, dim=1)  # [B/2, layer_idx, t+1, embed_dim]
+                
+                # 对条件和无条件特征分别处理
+                # 条件部分
+                cond_clip_features = [self.clip_emb[i](cond_features).unsqueeze(1) for i in range(layer_idx)]
+                cond_clip_features = torch.stack(cond_clip_features, dim=1)  # [B/2, layer_idx, 1, embed_dim]
+                
+                # 无条件部分
+                uncond_clip_features = [self.clip_emb[i](uncond_features).unsqueeze(1) for i in range(layer_idx)]
+                uncond_clip_features = torch.stack(uncond_clip_features, dim=1)  # [B/2, layer_idx, 1, embed_dim]
+                
+                # 合并CLIP特征和token嵌入
+                cond_input = torch.cat([cond_clip_features, combined_features], dim=2)
+                uncond_input = torch.cat([uncond_clip_features, combined_features], dim=2)
+                
+                # 创建padding mask，如果在语义部分且有提前结束的token
+                key_padding_mask = None
+                if self.semantic_flag and t < self.sem_len and semantic_valid_lengths is not None:
+                    key_padding_mask = torch.zeros(half_batch_size, t+2, dtype=torch.bool, device=device)  # +2是因为包含了clip特征
+                    for b in range(half_batch_size):
+                        if semantic_valid_lengths[b] < t:  # 如果当前时间步超过了有效语义长度
+                            # 将超出有效长度的部分标记为padding
+                            key_padding_mask[b, semantic_valid_lengths[b]+1:t+1] = True
+                
+                # 重塑为residual_encoder所需的输入格式
+                bs, layers, seq_plus_one, dim = cond_input.shape
+                cond_residual_input = rearrange(cond_input, 'b p l c -> (b l) p c')
+                uncond_residual_input = rearrange(uncond_input, 'b p l c -> (b l) p c')
+                
+                # 累积求和以获取层间依赖关系
+                cond_cumsum_input = torch.cumsum(cond_residual_input, dim=1)
+                uncond_cumsum_input = torch.cumsum(uncond_residual_input, dim=1)
+                
+                # 使用residual_encoder预测当前时间步t的第layer_idx层token
+                cond_residual_logits = self.residual_encoder(cond_cumsum_input)  # [(B/2*(t+2)), 1, vocab_size]
+                uncond_residual_logits = self.residual_encoder(uncond_cumsum_input)  # [(B/2*(t+2)), 1, vocab_size]
+                
+                # 重塑logits以便于采样，只取最后一个位置（当前时间步）的logits
+                cond_logits = rearrange(cond_residual_logits, '(b l) p v -> b l p v', b=bs)[:, -1, 0, :]  # [B/2, vocab_size]
+                uncond_logits = rearrange(uncond_residual_logits, '(b l) p v -> b l p v', b=bs)[:, -1, 0, :]  # [B/2, vocab_size]
+                
+                # 应用CFG公式: logits = uncond_logits + cfg_scale * (cond_logits - uncond_logits)
+                cfg_logits = uncond_logits + cfg_scale * (cond_logits - uncond_logits)
+                
+                # 对logits进行批量采样
+                if if_categorial:
+                    probs = F.softmax(cfg_logits, dim=-1)
+                    dist = torch.distributions.Categorical(probs)
+                    sampled_token = dist.sample()  # [B/2]
+                else:
+                    _, sampled_token = torch.topk(cfg_logits, k=1, dim=-1)
+                    sampled_token = sampled_token.squeeze(-1)  # [B/2]
+                
+                # 将当前层的token添加到结果中
+                all_tokens[:, layer_idx, t] = sampled_token
+        
+        return all_tokens
 
 class Text2Motion_Transformer(nn.Module):
 
@@ -109,8 +401,10 @@ class Text2Motion_Transformer(nn.Module):
         # clip_feature: (B, C_clip)
         # semantic_valid_lengths: (B,), actual length of semantic tokens in idxs for each batch item.
         # self.semantic_len: max length of the semantic part within idxs.
-
-        B, T_sequence, dim = idxs.shape
+        if idxs is not None:
+            B, T_sequence, dim = idxs.shape
+        else:
+            B, T_sequence, dim = clip_feature.shape
         device = idxs.device
 
         # 1. Create key_padding_mask for the idxs part based on semantic_valid_lengths
@@ -150,7 +444,7 @@ class Text2Motion_Transformer(nn.Module):
         
         # semantic_content_has_ended_flags[i] is True if self.num_vq was sampled (signaling end of semantic data)
         # for batch item i, leading to subsequent actual padding tokens (self.num_vq + 1).
-        semantic_content_has_ended_flags = torch.zeros(B, dtype=torch.bool, device=device)
+        # semantic_content_has_ended_flags = torch.zeros(B, dtype=torch.bool, device=device)
         
         # Stores the actual length of semantic tokens before any (self.num_vq + 1) padding started.
         # Initialized to self.semantic_len, assuming full semantic part unless ended early.
@@ -176,18 +470,18 @@ class Text2Motion_Transformer(nn.Module):
             
             logits = self.forward(current_input_for_transformer, clip_feature, semantic_valid_lengths=fwd_semantic_valid_lengths)
             logits = logits[:, -1, :] 
-            probs = F.softmax(logits, dim=-1) # (B, V)
+            # probs = F.softmax(logits, dim=-1) # (B, V)
 
             next_step_tokens_for_batch = torch.zeros(B, dtype=torch.long, device=device)
 
             if current_len < self.semantic_len: # Processing semantic part
                 candidate_tokens_this_step = None # Shape (B,)
-                if if_categorial:
-                    dist = Categorical(probs)
-                    candidate_tokens_this_step = dist.sample() 
-                else:
-                    _, topk_tokens = torch.topk(probs, k=1, dim=-1) 
-                    candidate_tokens_this_step = topk_tokens.squeeze(-1)
+                # if if_categorial:
+                #     dist = Categorical(probs)
+                #     candidate_tokens_this_step = dist.sample() 
+                # else:
+                #     _, topk_tokens = torch.topk(probs, k=1, dim=-1) 
+                #     candidate_tokens_this_step = topk_tokens.squeeze(-1)
 
                 for i in range(B):
                     if semantic_content_has_ended_flags[i]:
@@ -275,273 +569,13 @@ class Text2Motion_Transformer(nn.Module):
             return torch.empty((clip_feature.shape[0], 0), dtype=torch.long, device=clip_feature.device)
         return xs
 
-    def sample_interleaved(self, clip_feature, if_categorial=False):
-        xs = None
-        has_sampled_reconstruction_token = False
-        for k_loop_iter in range(self.block_size - 1):
-            current_input_for_transformer = xs if xs is not None else []
-            logits = self.forward(current_input_for_transformer, clip_feature)
-            logits = logits[:, -1, :]
-            probs_orig = F.softmax(logits, dim=-1)
-            temp_probs = probs_orig.clone()
-
-            k_pattern = k_loop_iter % 5
-
-            if k_pattern == 0: # Semantic token
-                temp_probs[:, self.SEMANTIC_TOKEN_END_IDX + 1 : self.num_vq] = 0 # Mask out recon and separator
-                temp_probs[:, self.num_vq] = 0 # Also mask out stop if no recon token yet and in semantic part of pattern
-            else: # Reconstruction token
-                temp_probs[:, :self.RECONSTRUCTION_TOKEN_START_IDX] = 0 # Mask out semantic and separator
-                # For stop token, if no reconstruction token has been sampled yet, mask stop.
-                # Otherwise, use its original probability.
-                if not has_sampled_reconstruction_token:
-                    temp_probs[:, self.num_vq] = 0
-                # else: stop_token_prob is already in temp_probs from clone
-
-            batch_sums = temp_probs.sum(dim=-1, keepdim=True)
-            for i_batch in range(temp_probs.shape[0]):
-                if batch_sums[i_batch] < 1e-9:
-                    temp_probs[i_batch, :] = 0
-                    if k_pattern == 0: # Semantic fallback
-                        # Try original probabilities for semantic range first
-                        allowed_orig_semantic_probs = probs_orig[i_batch, :self.SEMANTIC_TOKEN_END_IDX + 1]
-                        if allowed_orig_semantic_probs.sum() > 1e-9:
-                            temp_probs[i_batch, :self.SEMANTIC_TOKEN_END_IDX + 1] = allowed_orig_semantic_probs
-                            # if not has_sampled_reconstruction_token: temp_probs[i_batch, self.num_vq] = 0 # re-mask stop if needed (already done above)
-                        else: # Absolute fallback for semantic if original also zero
-                            temp_probs[i_batch, 0] = 1.0 # Force token 0
-                    else: # Reconstruction fallback
-                        allowed_orig_recon_probs = probs_orig[i_batch, self.RECONSTRUCTION_TOKEN_START_IDX : self.num_vq]
-                        if allowed_orig_recon_probs.sum() > 1e-9:
-                            temp_probs[i_batch, self.RECONSTRUCTION_TOKEN_START_IDX : self.num_vq] = allowed_orig_recon_probs
-                            if has_sampled_reconstruction_token: # if recon allowed, stop can also be considered
-                                temp_probs[i_batch, self.num_vq] = probs_orig[i_batch, self.num_vq]
-                            # else: stop remains 0 if no recon sampled yet
-                        else: # Absolute fallback for reconstruction if original also zero
-                            temp_probs[i_batch, self.RECONSTRUCTION_TOKEN_START_IDX] = 1.0 # Force first recon token
-            
-            batch_sums = temp_probs.sum(dim=-1, keepdim=True)
-            probs_masked = temp_probs / (batch_sums + 1e-9)
-
-            idx_sampled_token_val = None
-            if if_categorial:
-                dist = Categorical(probs_masked)
-                idx_val = dist.sample()
-                if idx_val == self.num_vq:
-                    break
-                idx_sampled_token_val = idx_val.unsqueeze(-1)
-            else:
-                _, idx_val_topk = torch.topk(probs_masked, k=1, dim=-1)
-                if idx_val_topk[0,0] == self.num_vq:
-                    break
-                idx_sampled_token_val = idx_val_topk
-
-            if xs is None:
-                xs = idx_sampled_token_val
-            else:
-                xs = torch.cat((xs, idx_sampled_token_val), dim=1)
-            
-            # Update flag if a reconstruction token was sampled
-            sampled_token_id = idx_sampled_token_val[0,0].item()
-            if self.RECONSTRUCTION_TOKEN_START_IDX <= sampled_token_id < self.num_vq:
-                has_sampled_reconstruction_token = True
-        
-        if xs is None:
-            return torch.empty((clip_feature.shape[0], 0), dtype=torch.long, device=clip_feature.device)
-        return xs
-    
-    def sample_semantic(self, clip_feature, if_categorial=False):
-        xs = None
-        current_sampling_phase = "semantic" 
-        sampled_at_least_one_reconstruction_token = False
-        
-        # Loop to generate up to block_size - 1 tokens
-        # (condition clip_feature takes one spot in the transformer's view, 
-        # effectively allowing block_size-1 generated tokens to form a sequence of self.block_size with condition)
-        for k_loop_iter in range(self.block_size -1): 
-            current_input_for_transformer = xs if xs is not None else []
-            
-            logits = self.forward(current_input_for_transformer, clip_feature)
-            logits = logits[:, -1, :] 
-            probs = F.softmax(logits, dim=-1)
-
-            # Mask probabilities based on the current sampling phase
-            # self.num_vq is the ID of the stop token. Max actual data token ID is self.num_vq - 1.
-            temp_probs = probs.clone()
-
-            if current_sampling_phase == "semantic":
-                # Allow [0, SEMANTIC_TOKEN_END_IDX] or SEPARATOR_TOKEN_IDX
-                # Block [RECONSTRUCTION_TOKEN_START_IDX, self.num_vq-1 (max_token_id)]
-                temp_probs[:, self.RECONSTRUCTION_TOKEN_START_IDX : self.num_vq] = 0 
-                # Also block explicit stop if in semantic phase before separator
-                temp_probs[:, self.num_vq] = 0 
-                    # If all semantic token probabilities are extremely low, force SEPARATOR_TOKEN_IDX
-                if torch.sum(temp_probs[:, :self.SEPARATOR_TOKEN_IDX]) < 1e-9 :
-                    temp_probs[:, :self.SEPARATOR_TOKEN_IDX+1] = 0 # Zero out semantic and separator initially
-                    temp_probs[:, self.SEPARATOR_TOKEN_IDX] = 1.0 # Force separator
-
-            elif current_sampling_phase == "reconstruction":
-                # Allow [RECONSTRUCTION_TOKEN_START_IDX, self.num_vq-1] or STOP_TOKEN (self.num_vq)
-                # Block all semantic tokens and the separator token
-                temp_probs[:, :self.RECONSTRUCTION_TOKEN_START_IDX] = 0
-            
-            # Renormalize probabilities
-            batch_sums = temp_probs.sum(dim=-1, keepdim=True)
-            # Handle cases where all valid probabilities become zero after masking
-            for i_batch in range(temp_probs.shape[0]):
-                if batch_sums[i_batch] < 1e-9: # If sum is too small
-                    if current_sampling_phase == "semantic":
-                        # Fallback: force SEPARATOR_TOKEN_IDX
-                        temp_probs[i_batch, :] = 0
-                        temp_probs[i_batch, self.SEPARATOR_TOKEN_IDX] = 1.0
-                    else: # reconstruction phase
-                        # Fallback: force STOP_TOKEN_ID
-                        temp_probs[i_batch, :] = 0
-                        temp_probs[i_batch, self.num_vq] = 1.0 
-            # Re-calculate sums after potential fallback
-            batch_sums = temp_probs.sum(dim=-1, keepdim=True)
-            # Avoid division by zero if somehow still all zeros (should be caught by fallback)
-            probs_masked = temp_probs / (batch_sums + 1e-9)
-
-
-            # Sample token from masked probabilities
-            idx_sampled_token_val = None
-            if if_categorial:
-                dist = Categorical(probs_masked)
-                idx_val = dist.sample()
-                if idx_val == self.num_vq: # Stop token
-                    break
-                idx_sampled_token_val = idx_val.unsqueeze(-1)
-            else:
-                _, idx_val_topk = torch.topk(probs_masked, k=1, dim=-1)
-                if idx_val_topk[0,0] == self.num_vq: # Stop token
-                    break
-                idx_sampled_token_val = idx_val_topk
-
-            # Append to sequence
-            if xs is None:
-                xs = idx_sampled_token_val
-            else:
-                xs = torch.cat((xs, idx_sampled_token_val), dim=1)
-
-            # Update phase and flags
-            sampled_token_id = idx_sampled_token_val[0,0].item()
-            if current_sampling_phase == "semantic" and sampled_token_id == self.SEPARATOR_TOKEN_IDX:
-                current_sampling_phase = "reconstruction"
-            elif current_sampling_phase == "reconstruction":
-                if self.RECONSTRUCTION_TOKEN_START_IDX <= sampled_token_id < self.num_vq:
-                    sampled_at_least_one_reconstruction_token = True
-        
-        # After loop, ensure reconstruction token if needed
-        if current_sampling_phase == "reconstruction" and not sampled_at_least_one_reconstruction_token:
-            # If sequence is empty or only separator, add a reconstruction token
-            if xs is None or xs.shape[1] == 0 :
-                xs = torch.tensor([[self.RECONSTRUCTION_TOKEN_START_IDX]], dtype=torch.long, device=clip_feature.device)
-            elif xs[0,-1].item() == self.SEPARATOR_TOKEN_IDX: # Ends with separator
-                # Append a reconstruction token if space allows (block_size-1 max generated tokens)
-                if xs.shape[1] < (self.block_size -1):
-                    xs = torch.cat((xs, torch.tensor([[self.RECONSTRUCTION_TOKEN_START_IDX]], dtype=torch.long, device=clip_feature.device)), dim=1)
-                else: # No space, replace separator
-                    xs[0,-1] = self.RECONSTRUCTION_TOKEN_START_IDX
-            elif xs[0,-1].item() != self.num_vq : # Last token is not STOP and not SEPARATOR
-                xs[0,-1] = self.RECONSTRUCTION_TOKEN_START_IDX # Replace last token
-
-        if xs is None:
-            return torch.empty((clip_feature.shape[0], 0), dtype=torch.long, device=clip_feature.device)
-        return xs
 
     def sample(self, clip_feature, if_categorial=False):
-        if self.semantic_interleaved_flag:
-            return self.sample_interleaved(clip_feature, if_categorial)
-        elif self.semantic_flag:
-            return self.sample_semantic(clip_feature, if_categorial)
-        elif self.dual_head_flag:
+        if self.dual_head_flag:
             return self.sample_dual_head(clip_feature, if_categorial)
         else:
             return self.sample_original_backup(clip_feature, if_categorial)
 
-    def sample_batch(self, clip_feature, if_categorial=False):
-        B = clip_feature.shape[0]
-        device = clip_feature.device
-        xs = torch.empty((B, 0), dtype=torch.long, device=device)
-        all_sequences_finished = torch.zeros(B, dtype=torch.bool, device=device)
-
-        if self.dual_head_flag:
-            semantic_phase_ended_flags = torch.zeros(B, dtype=torch.bool, device=device)
-            # actual_semantic_lengths stores the true length of semantic content for each item.
-            # Initialized to self.semantic_len, assuming full semantic part unless ended early by EOS signal.
-            actual_semantic_lengths = torch.full((B,), self.semantic_len, dtype=torch.long, device=device)
-            currently_in_semantic_phase = torch.ones(B, dtype=torch.bool, device=device)
-        
-        for loop_idx in range(self.block_size):
-            if all_sequences_finished.all():
-                break
-            
-            current_len = xs.shape[1] # Length of sequences before adding current step's tokens
-            
-            fwd_semantic_valid_lengths = None
-            if self.dual_head_flag:
-                # Pass the current known actual semantic lengths.
-                # The forward function will use this to mask padding tokens within the semantic block of xs.
-                fwd_semantic_valid_lengths = actual_semantic_lengths.clone()
-
-            # current_input_for_transformer is xs. If xs is (B,0), forward handles it.
-            logits = self.forward(xs, clip_feature, semantic_valid_lengths=fwd_semantic_valid_lengths)
-            # Get logits for the next token prediction
-            probs = F.softmax(logits[:, -1, :], dim=-1) 
-            
-            candidate_tokens = None
-            if if_categorial:
-                dist = Categorical(probs) # Probs: (B, V)
-                candidate_tokens = dist.sample() # Cand: (B,)
-            else:
-                _, candidate_tokens_topk = torch.topk(probs, k=1, dim=-1) # Cand_topk: (B, 1)
-                candidate_tokens = candidate_tokens_topk.squeeze(-1) # Cand: (B,)
-                
-            step_tokens = torch.zeros(B, dtype=torch.long, device=device)
-
-            for i in range(B):
-                if all_sequences_finished[i]:
-                    step_tokens[i] = self.num_vq + 1 # PAD token
-                    continue
-
-                token_i = candidate_tokens[i]
-                
-                if self.dual_head_flag:
-                    if currently_in_semantic_phase[i]:
-                        if semantic_phase_ended_flags[i]: # Semantic part already processed (either by EOS or filled len), PAD
-                            step_tokens[i] = self.num_vq + 1
-                        else: # Actively sampling/deciding for semantic part
-                            if token_i == self.num_vq: # Semantic EOS signal encountered
-                                semantic_phase_ended_flags[i] = True
-                                actual_semantic_lengths[i] = current_len # Record true semantic length before this EOS
-                                step_tokens[i] = self.num_vq + 1 # Append PAD token immediately
-                            else:
-                                step_tokens[i] = token_i
-                        
-                        # Check for phase transition due to length:
-                        # If, after appending this step's token, length becomes self.semantic_len
-                        if (current_len + 1) == self.semantic_len:
-                            currently_in_semantic_phase[i] = False # Switch phase for the *next* iteration
-                            if not semantic_phase_ended_flags[i]: # If not already ended by an EOS signal
-                                semantic_phase_ended_flags[i] = True # Mark semantic part as filled
-                                # actual_semantic_lengths[i] remains self.semantic_len (default or already set if EOS earlier)
-                    else: # Reconstruction phase for item i
-                        if token_i == self.num_vq: # Reconstruction EOS
-                            step_tokens[i] = self.num_vq # Append the actual EOS token
-                            all_sequences_finished[i] = True
-                        else:
-                            step_tokens[i] = token_i
-                else: # Original backup logic (not dual_head_flag)
-                    if token_i == self.num_vq: # EOS
-                        step_tokens[i] = self.num_vq
-                        all_sequences_finished[i] = True
-                    else:
-                        step_tokens[i] = token_i
-            
-            xs = torch.cat((xs, step_tokens.unsqueeze(-1)), dim=1)
-            
-        return xs
     
 class Text2Motion_RVQ_Transformer(nn.Module):
     def __init__(self, 
@@ -576,11 +610,11 @@ class Text2Motion_RVQ_Transformer(nn.Module):
         return logits
 
     def sample_original_backup(self, clip_feature, if_categorial=False):
-        xs = None
+        xs = clip_feature
         for k_loop_idx in range(self.block_size):
             current_input_for_transformer = xs if xs is not None else [] 
             
-            logits = self.forward(current_input_for_transformer, clip_feature)
+            logits = self.forward(xs)
             logits = logits[:, -1, :] 
             probs = F.softmax(logits, dim=-1)
 

@@ -1,4 +1,5 @@
 import os
+import random
 import re 
 import torch
 import numpy as np
@@ -28,7 +29,7 @@ warnings.filterwarnings('ignore')
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
+    os.environ['MASTER_PORT'] = str(random.randint(10000, 65535))
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
 
 def cleanup():
