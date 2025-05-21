@@ -104,7 +104,7 @@ def evaluation_vqvae(out_dir, val_loader, net, logger, writer, nb_iter, best_fid
             pose_xyz = recover_from_ric(torch.from_numpy(pose).float().cuda(), num_joints)
 
             result = net(motion[i:i+1, :m_length[i]])
-            pred_pose = result[0]
+            pred_pose = result[0][:,0:m_length[i],:]
             # pred_pose, loss_commit, perplexity = net(motion[i:i+1, :m_length[i]])
             pred_denorm = val_loader.dataset.inv_transform(pred_pose.detach().cpu().numpy())
             pred_xyz = recover_from_ric(torch.from_numpy(pred_denorm).float().cuda(), num_joints)
@@ -112,7 +112,6 @@ def evaluation_vqvae(out_dir, val_loader, net, logger, writer, nb_iter, best_fid
             if savenpy:
                 np.save(os.path.join(out_dir, name[i]+'_gt.npy'), pose_xyz[:, :m_length[i]].cpu().numpy())
                 np.save(os.path.join(out_dir, name[i]+'_pred.npy'), pred_xyz.detach().cpu().numpy())
-
             pred_pose_eval[i:i+1,:m_length[i],:] = pred_pose
             mpjpe += torch.sum(calculate_mpjpe(pose_xyz, pred_xyz))
             num_poses += pose_xyz.shape[0]

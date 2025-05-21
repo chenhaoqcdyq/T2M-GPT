@@ -249,7 +249,7 @@ class RVQVAE(nn.Module):
         x_encoder = self.encoder(x_in)
         code_idx, all_codes = self.quantizer.quantize(x_encoder, return_latent=True)
         if self.args.lgvq == 1:
-            x_encoder = self.lgvq_encoder.encode(x_encoder)
+            x_encoder = self.lgvq_encoder.encode(x_encoder.permute(0,2,1))
             return code_idx, all_codes, x_encoder
         # print(x_encoder.shape)
         

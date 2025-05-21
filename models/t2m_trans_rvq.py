@@ -16,13 +16,14 @@ from models.encdec import CausalTransformerEncoder
 from einops import rearrange
 
 class Residual_encoder(nn.Module):
-    def __init__(self, t2m_encoder, residual_encoder, embed_dim, num_vq=512, semantic_flag=False, num_quantizers = 6):
+    def __init__(self, t2m_encoder, residual_encoder, embed_dim, num_vq=512, semantic_flag=False, num_quantizers = 6, clip_dim=512):
         super().__init__()
         self.t2m_encoder = t2m_encoder
         self.residual_encoder = residual_encoder
         self.num_quantizers = num_quantizers
         self.tok_emb = nn.ModuleList([nn.Embedding(num_vq + 2, embed_dim) for _ in range(num_quantizers)])
         self.semantic_flag = semantic_flag
+        self.clip_emb = nn.ModuleList([nn.Linear(clip_dim, embed_dim) for _ in range(num_quantizers)])
         # self.token_emb = nn.Linear(num_vq + 1, embed_dim)
         if self.semantic_flag:
             self.sem_tok_emb = nn.ModuleList([nn.Embedding(num_vq + 2, embed_dim) for _ in range(num_quantizers)])
@@ -49,10 +50,12 @@ class Residual_encoder(nn.Module):
             first_quantizer_cls_pred = self.t2m_encoder(first_quantizer_indices, feat_clip_text)
         first_quantizer_cls_pred = first_quantizer_cls_pred.contiguous() 
         # first_quantizer_cls_pred (B, P, C)
-        bs, P, L, C = feature_a_indices.shape
+        bs, P, L = first_quantizer_cls_pred.shape
         first_quantizer_cls_pred = rearrange(first_quantizer_cls_pred[:,:L], 'b l c -> (b l) c').unsqueeze(1)
-        residual_input = torch.cat([first_quantizer_cls_pred, rearrange(feature_a_indices[:, :P-1, :, :], 'b p l c -> (b l) p c')], dim=1)
-        residual_cls_pred = self.residual_encoder(torch.cumsum(residual_input, dim=1))
+        # feature_a_indices_woclip = rearrange(feature_a_indices[:, :P-1, :, :], 'b p l c -> (b l) p c')
+        feature_a_indices_wclip = torch.stack([torch.cat([self.clip_emb[i](feat_clip_text).unsqueeze(1), feature_a_indices[:, i, :, :]], dim=1) for i in range(self.num_quantizers)], dim=1)
+        residual_input = torch.cat([first_quantizer_cls_pred, rearrange(feature_a_indices_wclip, 'b p l c -> (b l) p c')], dim=1)
+        residual_cls_pred = self.residual_encoder(torch.cumsum(residual_input[:, :self.num_quantizers, :], dim=1))
         # residual_cls_pred (B*L, P-1, C)
         # cls_pred = torch.cumsum(residual_cls_pred, dim=1)
         # cls_pred (B*L, P, C)

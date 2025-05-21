@@ -178,19 +178,39 @@ class Text2MotionDataset(data.Dataset):
         # 定长的semantic token和定长的motion token
         elif self.sample_way == 2:
             sem_tokens_len = sem_tokens.shape[0]
-            if sem_tokens_len+1 < self.sem_max_length:
-                m_sem_tokens_result = np.concatenate([sem_tokens, np.ones((1), dtype=int) * self.sem_end_idx, np.ones((self.sem_max_length-1-sem_tokens_len), dtype=int) * self.sem_pad_idx], axis=0)
-            else:
-                m_sem_tokens_result = np.concatenate([sem_tokens, np.ones((1), dtype=int) * self.sem_end_idx], axis=0)
+            if sem_tokens.ndim == 1:
+                if sem_tokens_len+1 < self.sem_max_length:
+                    m_sem_tokens_result = np.concatenate([sem_tokens, np.ones((1), dtype=int) * self.sem_end_idx, np.ones((self.sem_max_length-1-sem_tokens_len), dtype=int) * self.sem_pad_idx], axis=0)
+                else:
+                    m_sem_tokens_result = np.concatenate([sem_tokens, np.ones((1), dtype=int) * self.sem_end_idx], axis=0)
+            elif sem_tokens.ndim == 2:
+                if sem_tokens_len+1 < self.sem_max_length:
+                    m_sem_tokens_result = [np.concatenate([sem_tokens[:,i], np.ones((1), dtype=int) * self.sem_end_idx, np.ones((self.sem_max_length-1-sem_tokens_len), dtype=int) * self.sem_pad_idx], axis=0) for i in range(sem_tokens.shape[1])]
+                else:
+                    m_sem_tokens_result = [np.concatenate([sem_tokens[:,i], np.ones((1), dtype=int) * self.sem_end_idx], axis=0) for i in range(sem_tokens.shape[1])]
+                m_sem_tokens_result = np.stack(m_sem_tokens_result, axis=0)
+            # if sem_tokens_len+1 < self.sem_max_length:
+            #     m_sem_tokens_result = np.concatenate([sem_tokens, np.ones((1), dtype=int) * self.sem_end_idx, np.ones((self.sem_max_length-1-sem_tokens_len), dtype=int) * self.sem_pad_idx], axis=0)
+            # else:
+            #     m_sem_tokens_result = np.concatenate([sem_tokens, np.ones((1), dtype=int) * self.sem_end_idx], axis=0)
                 
             m_tokens_len = m_tokens.shape[0]
-            if m_tokens_len+1 < self.max_motion_length:
-                m_tokens_result = np.concatenate([m_tokens, np.ones((1), dtype=int) * self.mot_end_idx, np.ones((self.max_motion_length-1-m_tokens_len), dtype=int) * self.mot_pad_idx], axis=0)
+            if m_tokens.ndim == 1:
+                if m_tokens_len+1 < self.max_motion_length:
+                    m_tokens_result = np.concatenate([m_tokens, np.ones((1), dtype=int) * self.mot_end_idx, np.ones((self.max_motion_length-1-m_tokens_len), dtype=int) * self.mot_pad_idx], axis=0)
+                else:
+                    m_tokens_result = np.concatenate([m_tokens[:self.max_motion_length-1], np.ones((1), dtype=int) * self.mot_end_idx], axis=0)
+            elif m_tokens.ndim == 2:
+                if m_tokens_len+1 < self.max_motion_length:
+                    m_tokens_result = [np.concatenate([m_tokens[:,i], np.ones((1), dtype=int) * self.mot_end_idx, np.ones((self.max_motion_length-1-m_tokens_len), dtype=int) * self.mot_pad_idx], axis=0) for i in range(m_tokens.shape[1])]
+                else:
+                    m_tokens_result = [np.concatenate([m_tokens[:,i], np.ones((1), dtype=int) * self.mot_end_idx], axis=0) for i in range(m_tokens.shape[1])]
+                m_tokens_result = np.stack(m_tokens_result, axis=0)
+            m_tokens_result = np.concatenate([m_sem_tokens_result, m_tokens_result], axis=-1)
+            if m_tokens.ndim == 2:
+                return caption, m_tokens_result, [m_tokens_len, sem_tokens_len]
             else:
-                m_tokens_result = np.concatenate([m_tokens[:self.max_motion_length-1], np.ones((1), dtype=int) * self.mot_end_idx], axis=0)
-
-            m_tokens_result = np.concatenate([m_sem_tokens_result, m_tokens_result], axis=0)
-            return caption, m_tokens_result.reshape(-1), [m_tokens_len, sem_tokens_len]
+                return caption, m_tokens_result.reshape(-1), [m_tokens_len, sem_tokens_len]
         return caption, m_tokens_result.reshape(-1), m_tokens_len
 
 
