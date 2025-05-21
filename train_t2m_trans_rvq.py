@@ -161,7 +161,8 @@ Residual_trans_encoder.train()
 if args.resume_trans is not None:
     print ('loading transformer checkpoint from {}'.format(args.resume_trans))
     ckpt = torch.load(args.resume_trans, map_location='cpu')
-    Residual_trans_encoder.load_state_dict(ckpt['Residual_trans_encoder'], strict=True)
+    keys = Residual_trans_encoder.load_state_dict(ckpt['Residual_trans_encoder'], strict=False)
+    print(keys)
 Residual_trans_encoder.train()
 Residual_trans_encoder.cuda()
 ##### ---- Optimizer & Scheduler ---- #####
@@ -258,7 +259,7 @@ while nb_iter <= args.total_iter:
         text = clip.tokenize(masked_text, truncate=True).cuda()
         
     feat_clip_text = clip_model.encode_text(text).float()
-    sampled_token = Residual_trans_encoder.sample(feat_clip_text, False)
+    # sampled_token = Residual_trans_encoder.sample(feat_clip_text, False)
     input_index = target[:, :, :-1]
 
     if args.pkeep == -1:

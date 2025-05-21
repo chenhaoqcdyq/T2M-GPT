@@ -38,7 +38,7 @@ class Residual_encoder(nn.Module):
             sem_feature = torch.cat(sem_feature, dim=1)
             recon_feature = [self.tok_emb[i](a_indices[:, i:i+1, self.sem_len:]) for i in range(self.num_quantizers)]
             recon_feature = torch.cat(recon_feature, dim=1)
-            feature_a_indices = torch.cat([sem_feature, recon_feature], dim=1)
+            feature_a_indices = torch.cat([sem_feature, recon_feature], dim=2)
         else:
             feature_a_indices = [self.tok_emb[i](a_indices[:, i:i+1, :]) for i in range(self.num_quantizers)]
             # (B, L, C) * P -> (B, P, L, C)
