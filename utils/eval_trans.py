@@ -800,7 +800,7 @@ def evaluation_transformer_test_batch(out_dir, val_loader, net, trans, logger, w
 
             # [Text-to-motion Generation] get generated parts' token sequence
             # get parts_index_motion given the feat_clip_text
-            batch_parts_index_motion = trans.sample_batch(feat_clip_text, True)  # List: [(B, seq_len), ..., (B, seq_len)]
+            batch_parts_index_motion = trans.sample_batch(feat_clip_text, False)  # List: [(B, seq_len), ..., (B, seq_len)]
             if dual_head_flag:
                 batch_parts_index_motion = batch_parts_index_motion[..., trans.semantic_len:]
 

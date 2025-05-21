@@ -338,7 +338,7 @@ def main(rank, world_size, args):
         
         if nb_iter % args.print_iter == 0:
             # 使用all_reduce来同步所有进程的统计信息
-            dist.all_reduce(torch.tensor([avg_loss_cls, right_num, nb_sample_train], device=f'cuda:{rank}'))
+            torch.distributed.all_reduce(torch.tensor([avg_loss_cls, right_num, nb_sample_train], device=f'cuda:{rank}'))
             avg_loss_cls = avg_loss_cls / world_size
             right_num = right_num / world_size
             nb_sample_train = nb_sample_train / world_size
