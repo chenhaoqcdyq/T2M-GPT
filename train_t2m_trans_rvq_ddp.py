@@ -106,7 +106,7 @@ def main(rank, world_size, args):
     net = net.to(rank)
 
     ##### ---- Dataloader ---- #####
-    train_loader_token = dataset_tokenize.DATALoader(args.dataname, 1, unit_length=1)
+    train_loader_token = dataset_tokenize.DATALoader(args.dataname, 1, unit_length=1, num_workers=0)
     
     from utils.word_vectorizer import WordVectorizer
     w_vectorizer = WordVectorizer('./glove', 'our_vab')
@@ -182,7 +182,7 @@ def main(rank, world_size, args):
         ckpt = torch.load(args.resume_trans, map_location=f'cuda:{rank}')
         Residual_trans_encoder.load_state_dict(ckpt['Residual_trans_encoder'], strict=True)
     
-    Residual_trans_encoder = DDP(Residual_trans_encoder, device_ids=[rank])
+    Residual_trans_encoder = DDP(Residual_trans_encoder, device_ids=[rank], find_unused_parameters=True)
     Residual_trans_encoder.train()
 
     ##### ---- Optimizer & Scheduler ---- #####
@@ -250,7 +250,7 @@ def main(rank, world_size, args):
         train_dataset,
         batch_size=args.batch_size,
         shuffle=(train_sampler is None),
-        num_workers=4,
+        num_workers=0,
         pin_memory=True,
         sampler=train_sampler,
         drop_last=True
