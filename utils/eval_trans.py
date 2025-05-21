@@ -600,7 +600,7 @@ def evaluation_transformer_batch(out_dir, val_loader, net, trans, logger, writer
     return best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger
 
 @torch.no_grad()        
-def evaluation_transformer_test(out_dir, val_loader, net, trans, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, best_multi, clip_model, eval_wrapper, draw = True, save = True, savegif=False, savenpy=False, semantic_flag=False, dual_head_flag=False) : 
+def evaluation_transformer_test(out_dir, val_loader, net, trans, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, best_multi, clip_model, eval_wrapper, draw = True, save = True, savegif=False, savenpy=False, semantic_flag=False, dual_head_flag=False, sample_cfg=False, mmod_gen_times=30) : 
 
     trans.eval()
     nb_sample = 0
@@ -630,14 +630,22 @@ def evaluation_transformer_test(out_dir, val_loader, net, trans, logger, writer,
         text = clip.tokenize(clip_text, truncate=True).cuda()
 
         feat_clip_text = clip_model.encode_text(text).float()
+        if sample_cfg:
+            uncond_feat = clip_model.encode_text(clip.tokenize('', truncate=True).cuda()).float()
+            
+            # cond_feat = clip_model.encode_text(clip_text[1:2]).float()
         motion_multimodality_batch = []
-        for i in range(30):
+        for i in range(mmod_gen_times):
             pred_pose_eval = torch.zeros((bs, seq, pose.shape[-1])).cuda()
             pred_len = torch.ones(bs).long()
             
             for k in range(1):
                 try:
-                    index_motion = trans.sample(feat_clip_text[k:k+1], False)
+                    if sample_cfg:
+                        text_cond_uncond = torch.cat([feat_clip_text[k:k+1], uncond_feat.unsqueeze(0)], dim=0)
+                        index_motion = trans.sample_cfg(text_cond_uncond, True)
+                    else:
+                        index_motion = trans.sample(feat_clip_text[k:k+1], False)
                 except:
                     index_motion = torch.ones(1,4).cuda().long()
                 if semantic_flag:
@@ -730,7 +738,10 @@ def evaluation_transformer_test(out_dir, val_loader, net, trans, logger, writer,
 
     multimodality = 0
     motion_multimodality = torch.cat(motion_multimodality, dim=0).cpu().numpy()
-    multimodality = calculate_multimodality(motion_multimodality, 10)
+    if mmod_gen_times < 10:
+        multimodality = 0
+    else:
+        multimodality = calculate_multimodality(motion_multimodality, 10)
 
     fid = calculate_frechet_distance(gt_mu, gt_cov, mu, cov)
 
@@ -789,7 +800,7 @@ def evaluation_transformer_test_batch(out_dir, val_loader, net, trans, logger, w
 
             # [Text-to-motion Generation] get generated parts' token sequence
             # get parts_index_motion given the feat_clip_text
-            batch_parts_index_motion = trans.sample_batch(feat_clip_text, False)  # List: [(B, seq_len), ..., (B, seq_len)]
+            batch_parts_index_motion = trans.sample_batch(feat_clip_text, True)  # List: [(B, seq_len), ..., (B, seq_len)]
             if dual_head_flag:
                 batch_parts_index_motion = batch_parts_index_motion[..., trans.semantic_len:]
 

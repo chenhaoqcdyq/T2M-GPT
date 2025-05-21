@@ -148,7 +148,7 @@ top2 = []
 top3 = []
 matching = []
 multi = []
-repeat_time = 20
+repeat_time = 3
 
         
 for i in range(repeat_time):
