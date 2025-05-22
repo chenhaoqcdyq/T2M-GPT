@@ -118,6 +118,226 @@ def evaluation_vqvae(out_dir, val_loader, net, logger, writer, nb_iter, best_fid
             pose = val_loader.dataset.inv_transform(motion[i:i+1, :m_length[i], :].detach().cpu().numpy())
             pose_xyz = recover_from_ric(torch.from_numpy(pose).float().cuda(), num_joints)
 
+            result = net(motion[i:i+1, :m_length[i]])
+            result = result[0]
+            # index = net.encode(motion[i:i+1, :m_length[i]])
+            # result = net.forward_decoder(index)
+
+            # codebook = net.vqvae.quantizer.codebook#codebook.shape:(512, 1024)
+            # #取 codebook中index对应的就是对应的特征
+
+            # p = 1
+            # mask = torch.bernoulli(p * torch.ones(index.shape,
+            #                                              device=index.device))
+          
+            # mask = mask.round().to(dtype=torch.int64) 
+            
+            # # For indices where mask is 0 (the 1-p portion), find the most dissimilar codebook entry
+            # # Extract the original features from codebook
+            # original_features = codebook[index]
+            
+            # # Calculate cosine similarity between each feature and all codebook entries
+            # # For each original feature, find the most dissimilar codebook entry
+            # dissimilar_indices = torch.zeros_like(index)
+            
+            # for idx in range(index.shape[0]):
+            #     for t in range(index.shape[1]):
+            #         if mask[idx, t] == 0:  # Only process where mask is 0
+            #             # Get the original feature
+            #             orig_feat = original_features[idx, t]
+                        
+            #             # Calculate cosine similarity with all codebook entries
+            #             similarity = torch.nn.functional.cosine_similarity(
+            #                 orig_feat.unsqueeze(0), 
+            #                 codebook, 
+            #                 dim=1
+            #             )
+                        
+            #             # Get the index of the most dissimilar entry (lowest similarity)
+            #             dissimilar_idx = torch.argmin(similarity)
+            #             dissimilar_indices[idx, t] = dissimilar_idx
+            
+            # # Apply the mask: keep original indices where mask is 1, replace with dissimilar indices where mask is 0
+            # a_indices = mask * index + (1 - mask) * dissimilar_indices
+
+            # motion_feat = codebook[a_indices] #(b,t,L)
+            # motion_feat = motion_feat.mean(dim=1)
+            # # (b,t,L) -> (b,L)
+            # batch_motion_feat.append(motion_feat)
+            # result = net.forward_decoder(a_indices)
+            
+            pred_pose = result[:,0:m_length[i],:]
+            # pred_pose, loss_commit, perplexity = net(motion[i:i+1, :m_length[i]])
+            pred_denorm = val_loader.dataset.inv_transform(pred_pose.detach().cpu().numpy())
+            pred_xyz = recover_from_ric(torch.from_numpy(pred_denorm).float().cuda(), num_joints)
+            
+            if savenpy:
+                np.save(os.path.join(out_dir, name[i]+'_gt.npy'), pose_xyz[:, :m_length[i]].cpu().numpy())
+                np.save(os.path.join(out_dir, name[i]+'_pred.npy'), pred_xyz.detach().cpu().numpy())
+            pred_pose_eval[i:i+1,:m_length[i],:] = pred_pose
+            mpjpe += torch.sum(calculate_mpjpe(pose_xyz, pred_xyz))
+            num_poses += pose_xyz.shape[0]
+            if i < min(4, bs):
+                draw_org.append(pose_xyz)
+                draw_pred.append(pred_xyz)
+                draw_text.append(caption[i])
+
+        et_pred, em_pred = eval_wrapper.get_co_embeddings(word_embeddings, pos_one_hots, sent_len, pred_pose_eval, m_length)
+
+        motion_pred_list.append(em_pred)
+        motion_annotation_list.append(em)
+            
+        temp_R, temp_match = calculate_R_precision(et.cpu().numpy(), em.cpu().numpy(), top_k=3, sum_all=True)
+        R_precision_real += temp_R
+        matching_score_real += temp_match
+        temp_R, temp_match = calculate_R_precision(et_pred.cpu().numpy(), em_pred.cpu().numpy(), top_k=3, sum_all=True)
+        R_precision += temp_R
+        matching_score_pred += temp_match
+
+        # batch_motion_feat = torch.stack(batch_motion_feat, dim=0).squeeze(1)
+
+        # consine_sim = torch.nn.functional.cosine_similarity(batch_motion_feat, feat_clip_text, dim=1)
+        # consine_sim = torch.nn.functional.cosine_similarity(et_pred, em_pred, dim=1)
+        # # breakpoint()
+        # consine_sim = consine_sim.sum()
+        # consine_sim_total += consine_sim
+
+        nb_sample += bs
+    mpjpe = mpjpe / num_poses
+    motion_annotation_np = torch.cat(motion_annotation_list, dim=0).cpu().numpy()
+    motion_pred_np = torch.cat(motion_pred_list, dim=0).cpu().numpy()
+    gt_mu, gt_cov  = calculate_activation_statistics(motion_annotation_np)
+    mu, cov= calculate_activation_statistics(motion_pred_np)
+
+    diversity_real = calculate_diversity(motion_annotation_np, 300 if nb_sample > 300 else 100)
+    diversity = calculate_diversity(motion_pred_np, 300 if nb_sample > 300 else 100)
+
+    R_precision_real = R_precision_real / nb_sample
+    R_precision = R_precision / nb_sample
+
+    matching_score_real = matching_score_real / nb_sample
+    matching_score_pred = matching_score_pred / nb_sample
+
+    fid = calculate_frechet_distance(gt_mu, gt_cov, mu, cov)
+
+    # consine_sim_total = consine_sim_total / nb_sample
+
+    msg = f"--> \t Eva. Iter {nb_iter} :, FID. {fid:.4f}, Diversity Real. {diversity_real:.4f}, Diversity. {diversity:.4f}, R_precision_real. {R_precision_real}, R_precision. {R_precision}, matching_score_real. {matching_score_real}, matching_score_pred. {matching_score_pred}, mpjpe. {mpjpe:.4f}"
+    logger.info(msg)
+    
+    if draw:
+        writer.add_scalar('./Test/FID', fid, nb_iter)
+        writer.add_scalar('./Test/Diversity', diversity, nb_iter)
+        writer.add_scalar('./Test/top1', R_precision[0], nb_iter)
+        writer.add_scalar('./Test/top2', R_precision[1], nb_iter)
+        writer.add_scalar('./Test/top3', R_precision[2], nb_iter)
+        writer.add_scalar('./Test/matching_score', matching_score_pred, nb_iter)
+        # writer.add_scalar('./Test/consine_sim', consine_sim_total, nb_iter)
+
+
+    
+        if nb_iter % 5000 == 0 : 
+            for ii in range(4):
+                tensorborad_add_video_xyz(writer, draw_org[ii], nb_iter, tag='./Vis/org_eval'+str(ii), nb_vis=1, title_batch=[draw_text[ii]], outname=[os.path.join(out_dir, 'gt'+str(ii)+'.gif')] if savegif else None)
+            
+        if nb_iter % 5000 == 0 : 
+            for ii in range(4):
+                tensorborad_add_video_xyz(writer, draw_pred[ii], nb_iter, tag='./Vis/pred_eval'+str(ii), nb_vis=1, title_batch=[draw_text[ii]], outname=[os.path.join(out_dir, 'pred'+str(ii)+'.gif')] if savegif else None)   
+
+    
+    if fid < best_fid : 
+        msg = f"--> --> \t FID Improved from {best_fid:.5f} to {fid:.5f} !!!"
+        logger.info(msg)
+        best_fid, best_iter = fid, nb_iter
+        if save:
+            torch.save({'net' : net.state_dict()}, os.path.join(out_dir, 'net_best_fid.pth'))
+
+    if abs(diversity_real - diversity) < abs(diversity_real - best_div) : 
+        msg = f"--> --> \t Diversity Improved from {best_div:.5f} to {diversity:.5f} !!!"
+        logger.info(msg)
+        best_div = diversity
+        if save:
+            torch.save({'net' : net.state_dict()}, os.path.join(out_dir, 'net_best_div.pth'))
+
+    if R_precision[0] > best_top1 : 
+        msg = f"--> --> \t Top1 Improved from {best_top1:.4f} to {R_precision[0]:.4f} !!!"
+        logger.info(msg)
+        best_top1 = R_precision[0]
+        if save:
+            torch.save({'net' : net.state_dict()}, os.path.join(out_dir, 'net_best_top1.pth'))
+
+    if R_precision[1] > best_top2 : 
+        msg = f"--> --> \t Top2 Improved from {best_top2:.4f} to {R_precision[1]:.4f} !!!"
+        logger.info(msg)
+        best_top2 = R_precision[1]
+    
+    if R_precision[2] > best_top3 : 
+        msg = f"--> --> \t Top3 Improved from {best_top3:.4f} to {R_precision[2]:.4f} !!!"
+        logger.info(msg)
+        best_top3 = R_precision[2]
+    
+    if matching_score_pred < best_matching : 
+        msg = f"--> --> \t matching_score Improved from {best_matching:.5f} to {matching_score_pred:.5f} !!!"
+        logger.info(msg)
+        best_matching = matching_score_pred
+        if save:
+            torch.save({'net' : net.state_dict()}, os.path.join(out_dir, 'net_best_matching.pth'))
+    
+    if mpjpe < best_mpjpe : 
+        msg = f"--> --> \t mpjpe Improved from {best_mpjpe:.5f} to {mpjpe:.5f} !!!"
+        logger.info(msg)
+        best_mpjpe = mpjpe
+        if save:
+            torch.save({'net' : net.state_dict()}, os.path.join(out_dir, 'net_best_mpjpe.pth'))
+    if save:
+        torch.save({'net' : net.state_dict()}, os.path.join(out_dir, 'net_last.pth'))
+
+    net.train()
+    return best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger, best_mpjpe
+
+@torch.no_grad()        
+def evaluation_vqvae_cos(out_dir, val_loader, net, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, eval_wrapper, draw = True, save = True, savegif=False, savenpy=False, best_mpjpe=100, best_consine_sim=0) : 
+    net.eval()
+    nb_sample = 0
+    
+    draw_org = []
+    draw_pred = []
+    draw_text = []
+
+
+    motion_annotation_list = []
+    motion_pred_list = []
+
+    R_precision_real = 0
+    R_precision = 0
+
+    nb_sample = 0
+    matching_score_real = 0
+    matching_score_pred = 0
+    mpjpe = 0
+    num_poses = 0
+    consine_sim_total = 0
+
+    for batch in val_loader:
+        word_embeddings, pos_one_hots, caption, sent_len, motion, m_length, token, name = batch
+
+        text = clip.tokenize(caption, truncate=True).cuda()
+        feat_clip_text = clip_model.encode_text(text).float()
+
+        batch_motion_feat = []
+
+        motion = motion.cuda()
+        et, em = eval_wrapper.get_co_embeddings(word_embeddings, pos_one_hots, sent_len, motion, m_length)
+        bs, seq = motion.shape[0], motion.shape[1]
+
+        num_joints = 21 if motion.shape[-1] == 251 else 22
+        
+        pred_pose_eval = torch.zeros((bs, seq, motion.shape[-1])).cuda()
+
+        for i in range(bs):
+            pose = val_loader.dataset.inv_transform(motion[i:i+1, :m_length[i], :].detach().cpu().numpy())
+            pose_xyz = recover_from_ric(torch.from_numpy(pose).float().cuda(), num_joints)
+
             # result = net(motion[i:i+1, :m_length[i]])
             index = net.encode(motion[i:i+1, :m_length[i]])
             # result = net.forward_decoder(index)
@@ -299,7 +519,6 @@ def evaluation_vqvae(out_dir, val_loader, net, logger, writer, nb_iter, best_fid
 
     net.train()
     return best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger, best_mpjpe, best_consine_sim
-
 
 @torch.no_grad()        
 def evaluation_transformer(out_dir, val_loader, net, trans, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model, eval_wrapper, draw = True, save = True, savegif=False, semantic_flag=False, dual_head_flag=False) : 

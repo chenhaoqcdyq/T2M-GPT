@@ -22,7 +22,7 @@ args = option_trans.get_args_parser()
 torch.manual_seed(args.seed)
 
 path = os.path.dirname(args.resume_pth)
-trans_path = os.path.join(path, 'net_best_fid.pth')
+trans_path = args.resume_pth
 json_file = os.path.join(path, 'train_config.json')
 with open(json_file, 'r') as f:
     train_args_dict = json.load(f)  # dict
