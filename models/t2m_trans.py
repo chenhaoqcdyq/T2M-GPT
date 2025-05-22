@@ -450,8 +450,9 @@ class Text2Motion_Transformer(nn.Module):
             
             candidate_tokens = None
             if if_categorial:
-                dist = Categorical(probs) # Probs: (B, V)
-                candidate_tokens = dist.sample() # Cand: (B,)
+                # dist = Categorical(probs) # Probs: (B, V)
+                # candidate_tokens = dist.sample() # Cand: (B,)
+                candidate_tokens = sample_from_logits(logits, top_k=0, top_p=0.96)
             else:
                 _, candidate_tokens_topk = torch.topk(probs, k=1, dim=-1) # Cand_topk: (B, 1)
                 candidate_tokens = candidate_tokens_topk.squeeze(-1) # Cand: (B,)

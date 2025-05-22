@@ -3,11 +3,19 @@ import os
 import clip
 import numpy as np
 import torch
+import clip
 from scipy import linalg
 from tqdm import tqdm
 import visualization.plot_3d_global as plot_3d
 from utils.motion_process import recover_from_ric
 from typing import Any, List, Tuple, Union
+
+##### ---- Network ---- #####
+clip_model, clip_preprocess = clip.load("ViT-B/32", device=torch.device('cuda'), jit=False)  # Must set jit=False for training
+clip.model.convert_weights(clip_model)  # Actually this line is unnecessary since clip by default already on float16
+clip_model.eval()
+for p in clip_model.parameters():
+    p.requires_grad = False
 
 def tensorborad_add_video_xyz(writer, xyz, nb_iter, tag, nb_vis=4, title_batch=None, outname=None):
     xyz = xyz[:1]
@@ -68,7 +76,7 @@ def evaluation_vqvae_text(val_loader, net):
     return R1_mean, R2_mean
 
 @torch.no_grad()        
-def evaluation_vqvae(out_dir, val_loader, net, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, eval_wrapper, draw = True, save = True, savegif=False, savenpy=False, best_mpjpe=100) : 
+def evaluation_vqvae(out_dir, val_loader, net, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, eval_wrapper, draw = True, save = True, savegif=False, savenpy=False, best_mpjpe=100, best_consine_sim=0) : 
     net.eval()
     nb_sample = 0
     
@@ -88,8 +96,15 @@ def evaluation_vqvae(out_dir, val_loader, net, logger, writer, nb_iter, best_fid
     matching_score_pred = 0
     mpjpe = 0
     num_poses = 0
+    consine_sim_total = 0
+
     for batch in val_loader:
         word_embeddings, pos_one_hots, caption, sent_len, motion, m_length, token, name = batch
+
+        text = clip.tokenize(caption, truncate=True).cuda()
+        feat_clip_text = clip_model.encode_text(text).float()
+
+        batch_motion_feat = []
 
         motion = motion.cuda()
         et, em = eval_wrapper.get_co_embeddings(word_embeddings, pos_one_hots, sent_len, motion, m_length)
@@ -143,6 +158,11 @@ def evaluation_vqvae(out_dir, val_loader, net, logger, writer, nb_iter, best_fid
             
             # Apply the mask: keep original indices where mask is 1, replace with dissimilar indices where mask is 0
             a_indices = mask * index + (1 - mask) * dissimilar_indices
+
+            motion_feat = codebook[a_indices] #(b,t,L)
+            motion_feat = motion_feat.mean(dim=1)
+            # (b,t,L) -> (b,L)
+            batch_motion_feat.append(motion_feat)
             result = net.forward_decoder(a_indices)
             
             pred_pose = result[:,0:m_length[i],:]
@@ -173,6 +193,14 @@ def evaluation_vqvae(out_dir, val_loader, net, logger, writer, nb_iter, best_fid
         R_precision += temp_R
         matching_score_pred += temp_match
 
+        # batch_motion_feat = torch.stack(batch_motion_feat, dim=0).squeeze(1)
+
+        # consine_sim = torch.nn.functional.cosine_similarity(batch_motion_feat, feat_clip_text, dim=1)
+        consine_sim = torch.nn.functional.cosine_similarity(et_pred, em_pred, dim=1)
+        # breakpoint()
+        consine_sim = consine_sim.sum()
+        consine_sim_total += consine_sim
+
         nb_sample += bs
     mpjpe = mpjpe / num_poses
     motion_annotation_np = torch.cat(motion_annotation_list, dim=0).cpu().numpy()
@@ -191,7 +219,9 @@ def evaluation_vqvae(out_dir, val_loader, net, logger, writer, nb_iter, best_fid
 
     fid = calculate_frechet_distance(gt_mu, gt_cov, mu, cov)
 
-    msg = f"--> \t Eva. Iter {nb_iter} :, FID. {fid:.4f}, Diversity Real. {diversity_real:.4f}, Diversity. {diversity:.4f}, R_precision_real. {R_precision_real}, R_precision. {R_precision}, matching_score_real. {matching_score_real}, matching_score_pred. {matching_score_pred}, mpjpe. {mpjpe:.4f}"
+    consine_sim_total = consine_sim_total / nb_sample
+
+    msg = f"--> \t Eva. Iter {nb_iter} :, FID. {fid:.4f}, Diversity Real. {diversity_real:.4f}, Diversity. {diversity:.4f}, R_precision_real. {R_precision_real}, R_precision. {R_precision}, matching_score_real. {matching_score_real}, matching_score_pred. {matching_score_pred}, mpjpe. {mpjpe:.4f}, consine_sim. {consine_sim_total:.4f}"
     logger.info(msg)
     
     if draw:
@@ -201,6 +231,8 @@ def evaluation_vqvae(out_dir, val_loader, net, logger, writer, nb_iter, best_fid
         writer.add_scalar('./Test/top2', R_precision[1], nb_iter)
         writer.add_scalar('./Test/top3', R_precision[2], nb_iter)
         writer.add_scalar('./Test/matching_score', matching_score_pred, nb_iter)
+        writer.add_scalar('./Test/consine_sim', consine_sim_total, nb_iter)
+
 
     
         if nb_iter % 5000 == 0 : 
@@ -256,12 +288,17 @@ def evaluation_vqvae(out_dir, val_loader, net, logger, writer, nb_iter, best_fid
         best_mpjpe = mpjpe
         if save:
             torch.save({'net' : net.state_dict()}, os.path.join(out_dir, 'net_best_mpjpe.pth'))
-
+    if consine_sim_total > best_consine_sim : 
+        msg = f"--> --> \t consine_sim Improved from {best_consine_sim:.5f} to {consine_sim_total:.5f} !!!"
+        logger.info(msg)
+        best_consine_sim = consine_sim_total
+        if save:
+            torch.save({'net' : net.state_dict()}, os.path.join(out_dir, 'net_best_consine_sim.pth'))
     if save:
         torch.save({'net' : net.state_dict()}, os.path.join(out_dir, 'net_last.pth'))
 
     net.train()
-    return best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger, best_mpjpe
+    return best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger, best_mpjpe, best_consine_sim
 
 
 @torch.no_grad()        
@@ -433,7 +470,7 @@ def evaluation_transformer(out_dir, val_loader, net, trans, logger, writer, nb_i
     return best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger
 
 @torch.no_grad()
-def evaluation_transformer_batch(out_dir, val_loader, net, trans, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model, eval_wrapper, draw = True, save = True, savegif=False, semantic_flag=False, dual_head_flag=False) :
+def evaluation_transformer_batch(out_dir, val_loader, net, trans, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, clip_model, eval_wrapper, draw = True, save = True, savegif=False, semantic_flag=False, dual_head_flag=False, upsample_factor=1) :
     """
     This is used for evaluate GPT at training stage.
     It excludes the multi-modality evaluation by simply set a circle only at 1 time.
@@ -458,6 +495,13 @@ def evaluation_transformer_batch(out_dir, val_loader, net, trans, logger, writer
         for batch in tqdm(val_loader):
             
             word_embeddings, pos_one_hots, clip_text, sent_len, pose, m_length, token, name = batch
+            if upsample_factor > 1:
+                pose = torch.nn.functional.interpolate(
+                    pose.permute(0, 2, 1),  # 添加batch
+                    size=pose.shape[1] * upsample_factor,
+                    mode='linear',
+                    align_corners=False
+                ).permute(0, 2, 1)
 
             bs, seq = pose.shape[:2]
             num_joints = 21 if pose.shape[-1] == 251 else 22
@@ -860,7 +904,7 @@ def evaluation_transformer_test_batch(out_dir, val_loader, net, trans, logger, w
             else:
                 # [Text-to-motion Generation] get generated parts' token sequence
                 # get parts_index_motion given the feat_clip_text
-                batch_parts_index_motion = trans.sample_batch(feat_clip_text, True)  # List: [(B, seq_len), ..., (B, seq_len)]
+                batch_parts_index_motion = trans.sample_batch(feat_clip_text, False)  # List: [(B, seq_len), ..., (B, seq_len)]
             if dual_head_flag:
                 batch_parts_index_motion = batch_parts_index_motion[..., trans.semantic_len:]
 

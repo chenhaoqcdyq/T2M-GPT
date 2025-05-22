@@ -52,7 +52,7 @@ logger.info(json.dumps(vars(args), indent=4, sort_keys=True))
 
 from utils.word_vectorizer import WordVectorizer
 w_vectorizer = WordVectorizer('./glove', 'our_vab')
-val_loader = dataset_TM_eval.DATALoader(args.dataname, True, 32, w_vectorizer)
+val_loader = dataset_TM_eval.DATALoader(args.dataname, True, 32, w_vectorizer, sample_max=320)
 
 dataset_opt_path = 'checkpoints/kit/Comp_v6_KLD005/opt.txt' if args.dataname == 'kit' else 'checkpoints/t2m/Comp_v6_KLD005/opt.txt'
 
@@ -152,7 +152,7 @@ repeat_time = 3
 
         
 for i in range(repeat_time):
-    best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, best_multi, writer, logger = eval_trans.evaluation_transformer_test_batch(args.out_dir, val_loader, net, trans_encoder, logger, writer, 0,  best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, best_multi=0, clip_model=clip_model, eval_wrapper=eval_wrapper, draw=False, savegif=False, save=False, savenpy=False, dual_head_flag=(args.sample_way == 2), skip_mmod=True, sample_cfg=True)
+    best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, best_multi, writer, logger = eval_trans.evaluation_transformer_test_batch(args.out_dir, val_loader, net, trans_encoder, logger, writer, 0,  best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, best_multi=0, clip_model=clip_model, eval_wrapper=eval_wrapper, draw=False, savegif=False, save=False, savenpy=False, dual_head_flag=(args.sample_way == 2), skip_mmod=True, sample_cfg=False)
     # best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, best_multi, writer, logger = eval_trans.evaluation_transformer_test(args.out_dir, val_loader, net, trans_encoder, logger, writer, 0,  best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, best_multi=0, clip_model=clip_model, eval_wrapper=eval_wrapper, draw=False, savegif=False, save=False, savenpy=False, dual_head_flag=(args.sample_way == 2), mmod_gen_times=1, sample_cfg=True, iters=10)
     fid.append(best_fid)
     div.append(best_div)

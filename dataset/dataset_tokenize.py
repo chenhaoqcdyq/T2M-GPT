@@ -9,10 +9,11 @@ from tqdm import tqdm
 
 
 class VQMotionDataset(data.Dataset):
-    def __init__(self, dataset_name, feat_bias = 5, window_size = 64, unit_length = 8):
+    def __init__(self, dataset_name, feat_bias = 5, window_size = 64, unit_length = 8, upsample_factor = 1):
         self.window_size = window_size
         self.unit_length = unit_length
         self.feat_bias = feat_bias
+        self.upsample_factor = upsample_factor
 
         self.dataset_name = dataset_name
         self.min_motion_len = 40 if dataset_name =='t2m' else 24
@@ -108,11 +109,21 @@ class VQMotionDataset(data.Dataset):
             m_length = self.max_motion_length
         else:
             m_length = (m_length // self.unit_length) * self.unit_length
-            # if m_length > self.max_motion_length:
-
             idx = random.randint(0, len(motion) - m_length)
             motion = motion[idx:idx+m_length]
         
+        # 实现时间维度的上采样
+        if self.upsample_factor > 1:
+            original_length = motion.shape[0]
+            new_length = original_length * self.upsample_factor
+            motion = torch.from_numpy(motion).permute(1, 0)
+            motion = torch.nn.functional.interpolate(
+                motion.unsqueeze(0),  # 添加batch和channel维度
+                size=new_length,
+                mode='linear',
+                align_corners=False
+            ).squeeze(0).permute(1, 0).numpy()
+            m_length = new_length
 
         "Z Normalization"
         motion = (motion - self.mean) / self.std
@@ -121,14 +132,16 @@ class VQMotionDataset(data.Dataset):
 
 def DATALoader(dataset_name,
                 batch_size = 1,
-                num_workers = 8, unit_length = 4) : 
+                num_workers = 8, 
+                unit_length = 4,
+                upsample_factor = 1) : 
     
-    train_loader = torch.utils.data.DataLoader(VQMotionDataset(dataset_name, unit_length=unit_length),
-                                              batch_size,
-                                              shuffle=True,
-                                              num_workers=num_workers,
-                                              #collate_fn=collate_fn,
-                                              drop_last = True)
+    train_loader = torch.utils.data.DataLoader(
+        VQMotionDataset(dataset_name, unit_length=unit_length, upsample_factor=upsample_factor),
+        batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        drop_last = True)
     
     return train_loader
 

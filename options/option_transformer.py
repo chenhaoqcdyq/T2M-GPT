@@ -72,6 +72,6 @@ def get_args_parser():
     parser.add_argument('--classfg', default=0, type=float, help='use motion prior')
     parser.add_argument('--num_reslayers', default=4, type=int, help='num_reslayers')
     parser.add_argument('--world_size', default=1, type=int, help='world_size')
-    
+    parser.add_argument('--upsample_factor', default=1, type=int, help='upsample_factor')
     
     return parser.parse_args()

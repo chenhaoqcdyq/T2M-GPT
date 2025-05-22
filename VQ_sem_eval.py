@@ -14,12 +14,14 @@ from models.evaluator_wrapper import EvaluatorModelWrapper
 import warnings
 warnings.filterwarnings('ignore')
 import numpy as np
+
+
 ##### ---- Exp dirs ---- #####
 args = option_vq.get_args_parser()
 torch.manual_seed(args.seed)
 path = os.path.dirname(args.resume_pth)
 json_file = os.path.join(path, 'train_config.json')
-model_path = os.path.join(path, 'net_best_fid.pth')
+model_path = os.path.join(path, 'net_last.pth')
 with open(json_file, 'r') as f:
     train_args_dict = json.load(f)  # dict
 args_vq = eval_trans.EasyDict(train_args_dict)
@@ -81,15 +83,17 @@ top2 = []
 top3 = []
 matching = []
 best_mpjpe_list = []
+consine_sim_list = []
 repeat_time = 5
 for i in range(repeat_time):
-    best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger, best_mpjpe = eval_trans.evaluation_vqvae(args.out_dir, val_loader, net, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, eval_wrapper=eval_wrapper, draw=False, save=False, savenpy=(i==0), best_mpjpe=1e9)
+    best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger, best_mpjpe,consin_sim = eval_trans.evaluation_vqvae(args.out_dir, val_loader, net, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, eval_wrapper=eval_wrapper, draw=False, save=False, savenpy=(i==0), best_mpjpe=1e9)
     fid.append(best_fid)
     div.append(best_div)
     top1.append(best_top1)
     top2.append(best_top2)
     top3.append(best_top3)
     matching.append(best_matching)
+    consine_sim_list.append(consin_sim.cpu().numpy())
     # Handle both tensor and int/float cases
     if isinstance(best_mpjpe, torch.Tensor):
         best_mpjpe_list.append(best_mpjpe.cpu().numpy())
@@ -103,6 +107,7 @@ print('top2: ', sum(top2)/repeat_time)
 print('top3: ', sum(top3)/repeat_time)
 print('matching: ', sum(matching)/repeat_time)
 print('mpjpe: ', sum(best_mpjpe_list)/repeat_time)
+print('consine_sim: ', sum(consine_sim_list)/repeat_time)
 fid = np.array(fid)
 div = np.array(div)
 top1 = np.array(top1)
@@ -110,5 +115,6 @@ top2 = np.array(top2)
 top3 = np.array(top3)
 matching = np.array(matching)
 mpjpe = np.array(best_mpjpe_list)
-msg_final = f"FID. {np.mean(fid):.3f}, conf. {np.std(fid)*1.96/np.sqrt(repeat_time):.3f}, Diversity. {np.mean(div):.3f}, conf. {np.std(div)*1.96/np.sqrt(repeat_time):.3f}, TOP1. {np.mean(top1):.3f}, conf. {np.std(top1)*1.96/np.sqrt(repeat_time):.3f}, TOP2. {np.mean(top2):.3f}, conf. {np.std(top2)*1.96/np.sqrt(repeat_time):.3f}, TOP3. {np.mean(top3):.3f}, conf. {np.std(top3)*1.96/np.sqrt(repeat_time):.3f}, Matching. {np.mean(matching):.3f}, conf. {np.std(matching)*1.96/np.sqrt(repeat_time):.3f}, MPJPE. {np.mean(mpjpe):.3f}, conf. {np.std(mpjpe)*1.96/np.sqrt(repeat_time):.3f}"
+consine_sim = np.array(consine_sim_list)
+msg_final = f"FID. {np.mean(fid):.3f}, conf. {np.std(fid)*1.96/np.sqrt(repeat_time):.3f}, Diversity. {np.mean(div):.3f}, conf. {np.std(div)*1.96/np.sqrt(repeat_time):.3f}, TOP1. {np.mean(top1):.3f}, conf. {np.std(top1)*1.96/np.sqrt(repeat_time):.3f}, TOP2. {np.mean(top2):.3f}, conf. {np.std(top2)*1.96/np.sqrt(repeat_time):.3f}, TOP3. {np.mean(top3):.3f}, conf. {np.std(top3)*1.96/np.sqrt(repeat_time):.3f}, Matching. {np.mean(matching):.3f}, conf. {np.std(matching)*1.96/np.sqrt(repeat_time):.3f}, MPJPE. {np.mean(mpjpe):.3f}, conf. {np.std(mpjpe)*1.96/np.sqrt(repeat_time):.3f}, Consine_sim. {np.mean(consine_sim):.3f}, conf. {np.std(consine_sim)*1.96/np.sqrt(repeat_time):.3f}"
 logger.info(msg_final)
