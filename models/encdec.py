@@ -87,6 +87,7 @@ class Encoder(nn.Module):
 
     def forward(self, x, motion_mask = None):
         if motion_mask is not None:
+            breakpoint()
             x = x * motion_mask.unsqueeze(1)
         return self.model(x)
 
@@ -740,6 +741,10 @@ class Dualsem_encoderv3(nn.Module):
             self.time_downsamplers = nn.ModuleList([
                 nn.Identity() for _ in range(num_layers)
             ])
+        elif down_sample==3 or down_sample==4:
+            self.time_downsamplers = nn.ModuleList([
+                TemporalDownsamplerHalf(d_model, causal=causal) for _ in range(down_sample)
+            ])
         else:
             self.time_downsamplers = CausalDownsample(d_model, down_sample)
             
@@ -828,10 +833,14 @@ class Dualsem_encoderv3(nn.Module):
         B, T = motion.shape[0], motion.shape[1]
         # 时间特征处理
         time_feat = motion
+        time_feat = self.time_position[:,:time_feat.shape[1],:] + time_feat
         if motion_mask is not None:
             motion_mask = motion_mask.to(time_feat.device).bool()
             # time_key_padding_mask = motion_mask.repeat_interleave(7, dim=0)
-            
+            if self.ifdown_sample == 3 or self.ifdown_sample == 4:
+                for i in range(self.ifdown_sample - 2):
+                    time_feat = self.time_downsamplers[i+2](time_feat)
+                    motion_mask = motion_mask[:, ::2]
             # 在每一层Transformer后应用时间降采样
             for i, layer in enumerate(self.time_transformer.layers):
                 time_feat = self.time_downsamplers[i](time_feat, padding_mask=~motion_mask)
@@ -839,6 +848,9 @@ class Dualsem_encoderv3(nn.Module):
                     motion_mask = motion_mask[:, ::2]  # 更新mask
                 time_feat = layer(time_feat, src_key_padding_mask=~motion_mask)
         else:
+            if self.ifdown_sample == 3 or self.ifdown_sample == 4:
+                for i in range(self.ifdown_sample - 2):
+                    time_feat = self.time_downsamplers[i+2](time_feat)
             # 在每一层Transformer后应用时间降采样
             for i, layer in enumerate(self.time_transformer.layers):
                 time_feat = self.time_downsamplers[i](time_feat)
@@ -1066,6 +1078,7 @@ class Dualsem_encoderv3(nn.Module):
                     motion_mask = motion_mask[:, ::2].clone()  # 使用 clone() 创建副本
                 time_feat = layer(time_feat, src_key_padding_mask=~motion_mask)
         else:
+            time_feat = self.time_position[:,:time_feat.shape[1],:]+time_feat
             # 在每一层Transformer后应用时间降采样
             for i, layer in enumerate(self.time_transformer.layers):
                 time_feat = self.time_downsamplers[i](time_feat)

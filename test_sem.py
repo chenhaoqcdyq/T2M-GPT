@@ -42,15 +42,16 @@ def update_lr_warm_up(optimizer, nb_iter, warm_up_iter, lr):
 
     return optimizer, current_lr
 
+args = option_vq.get_args_parser()
+torch.manual_seed(args.seed)
 ##### ---- Exp dirs ---- #####
-path = "output/00055-t2m-VQVAE_all_motion/VQVAE-VQVAE_all_motion-t2m"
+path = "output/00152-t2m-VQVAE_lgvq_cnn_down/VQVAE-VQVAE_lgvq_cnn_down-t2m"
 json_file = os.path.join(path, 'train_config.json')
 checkpoint_path = os.path.join(path, 'net_last.pth')
 with open(json_file, 'r') as f:
     train_args_dict = json.load(f)  # dict
 args = eval_trans.EasyDict(train_args_dict) 
 # args = option_vq.get_args_parser()
-torch.manual_seed(args.seed)
 
 # desc = args.dataname  # dataset
 # # desc += f'-{args.exp_name}'
@@ -106,7 +107,6 @@ train_loader_iter = dataset_VQ.cycle(train_loader)
 #                                         w_vectorizer,
 #                                         unit_length=2**args.down_t)
 print("args = ",args)
-##### ---- Network ---- #####
 net = vqvae.HumanVQVAE(args, ## use args to define different parameters in different quantizers
                        args.nb_code,
                        args.code_dim,
@@ -118,57 +118,47 @@ net = vqvae.HumanVQVAE(args, ## use args to define different parameters in diffe
                        args.dilation_growth_rate,
                        args.vq_act,
                        args.vq_norm,
-                       enc='transformer',
-                       lgvq=args.lgvq)
+                       enc=args.enc,
+                       lgvq=args.lgvq,
+                       causal=args.causal if 'causal' in args else 0,
+                       dec_causal=args.dec_causal if 'dec_causal' in args else 0)
 
 
-if args.resume_pth : 
-    logger.info('loading checkpoint from {}'.format(args.resume_pth))
-    ckpt = torch.load(args.resume_pth, map_location='cpu')
-    keys = net.load_state_dict(ckpt['net'], strict=False)
-    print("missing_keys",keys.missing_keys)
-    print("unexpected_keys",keys.unexpected_keys)
+
+logger.info('loading checkpoint from {}'.format(checkpoint_path))
+ckpt = torch.load(checkpoint_path, map_location='cpu')
+keys = net.load_state_dict(ckpt['net'], strict=False)
+print("missing_keys",keys.missing_keys)
+print("unexpected_keys",keys.unexpected_keys)
 net.eval()
 net.cuda()
 
 # if args.freeze_encdec != 0 and args.lgvq != 0:
 #     net = freeze_encdec(net)
     
-gt_motion = next(train_loader_iter)
-if len(gt_motion) == 2:
-    gt_motion, gt_motion_mask = gt_motion
-    text_mask, name = None, None
-elif len(gt_motion) == 3:
-    gt_motion, gt_motion_mask, text_mask = gt_motion
-elif len(gt_motion) == 4:
-    gt_motion, gt_motion_mask, text_mask, name = gt_motion
-elif len(gt_motion) == 5:
-    gt_motion, gt_motion_mask, text_mask, name, text = gt_motion
-else:
-    gt_motion_mask, text_mask, name = None, None, None
-
 R1 = []
 R2 = []
 for i in tqdm(range(1)):
     gt_motion = next(train_loader_iter)
-    if len(gt_motion) == 2:
-        gt_motion, gt_motion_mask = gt_motion
-        text_mask, name = None, None
-    elif len(gt_motion) == 3:
-        gt_motion, gt_motion_mask, text_mask = gt_motion
-    elif len(gt_motion) == 4:
-        gt_motion, gt_motion_mask, text_mask, name = gt_motion
-    elif len(gt_motion) == 5:
-        gt_motion, gt_motion_mask, text_mask, name, text = gt_motion
+    if isinstance(gt_motion, tuple) or isinstance(gt_motion, list):
+        if len(gt_motion) == 2:
+            gt_motion, gt_motion_mask = gt_motion
+            text_mask, name = None, None
+        elif len(gt_motion) == 3:
+            gt_motion, gt_motion_mask, text_mask = gt_motion
+        elif len(gt_motion) == 4:
+            gt_motion, gt_motion_mask, text_mask, name = gt_motion
+        elif len(gt_motion) == 5:
+            gt_motion, gt_motion_mask, text_mask, name, text = gt_motion
     else:
-        gt_motion_mask, text_mask, name, text = None, None, None, None
+        gt_motion_mask, text_mask, name = None, None, None
     gt_motion = gt_motion.cuda().float() # (bs, 64, dim)
     if gt_motion_mask is not None:
         gt_motion_mask = gt_motion_mask.cuda().long() # (bs, 64)
-    # print(text)
     
     with torch.no_grad():
         # for i in range(len(gt_parts[0])):
+        breakpoint()
         result = net.text_motion_topk(gt_motion, motion_mask=gt_motion_mask, topk=5, text_mask=text_mask, text=text)
     global_R, pred_R = result
     R1.append(global_R)

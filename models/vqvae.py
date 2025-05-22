@@ -82,14 +82,14 @@ class VQVAE_251(nn.Module):
         else:
             return code_idx
 
-    def text_motion_topk(self, motion, text, motion_mask=None, topk=5, text_mask=None):
+    def text_motion_topk(self, motion, text, text_mask=None, motion_mask=None, topk=5):
         x_in = self.preprocess(motion)
         # Encode
         x_encoder = self.encoder(x_in, motion_mask)
         motion = x_encoder.permute(0,2,1)
         # breakpoint()
         # motion_mask = motion_mask[:, ::4].clone()
-        return self.lgvq_encoder.text_motion_topk(motion, text, motion_mask=motion_mask, topk=topk, text_mask=text_mask)
+        return self.lgvq_encoder.text_motion_topk(motion, text, text_mask=text_mask, motion_mask=motion_mask, topk=topk)
 
 
     def forward(self, x, motion_mask = None, text_mask = None, text_id = None):

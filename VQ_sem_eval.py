@@ -52,7 +52,7 @@ val_loader = dataset_TM_eval.DATALoader(args.dataname, True, 32, w_vectorizer, u
 
 
 ##### ---- Network ---- #####
-net = vqvae.HumanVQVAE(args_vq, ## use args to define different parameters in different quantizers
+net = vqvae.HumanVQVAE(args, ## use args to define different parameters in different quantizers
                        args_vq.nb_code,
                        args_vq.code_dim,
                        args_vq.output_emb_width,
@@ -86,7 +86,7 @@ best_mpjpe_list = []
 consine_sim_list = []
 repeat_time = 5
 for i in range(repeat_time):
-    best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger, best_mpjpe,consin_sim = eval_trans.evaluation_vqvae_cos(args.out_dir, val_loader, net, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, eval_wrapper=eval_wrapper, draw=False, save=False, savenpy=(i==0), best_mpjpe=1e9)
+    best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger, best_mpjpe,consin_sim = eval_trans.evaluation_vqvae(args.out_dir, val_loader, net, logger, writer, 0, best_fid=1000, best_iter=0, best_div=100, best_top1=0, best_top2=0, best_top3=0, best_matching=100, eval_wrapper=eval_wrapper, draw=False, save=False, savenpy=(i==0), best_mpjpe=1e9)
     fid.append(best_fid)
     div.append(best_div)
     top1.append(best_top1)
