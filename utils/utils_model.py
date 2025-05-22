@@ -13,12 +13,15 @@ def getCi(accLog):
 
     return mean, ci95
 
-def get_logger(out_dir):
+def get_logger(out_dir,log_path=None):
     logger = logging.getLogger('Exp')
     logger.setLevel(logging.INFO)
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
 
-    file_path = os.path.join(out_dir, "run.log")
+    if log_path is None:
+        file_path = os.path.join(out_dir, "run.log")
+    else:
+        file_path = os.path.join(log_path, "run.log")
     file_hdlr = logging.FileHandler(file_path)
     file_hdlr.setFormatter(formatter)
 

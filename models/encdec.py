@@ -1062,10 +1062,10 @@ class Dualsem_encoderv3(nn.Module):
             r2_mlm = hits[:, :2].sum(dim=1).clamp(max=1).sum().float() / active_labels.size(0)
             r3_mlm = hits[:, :3].sum(dim=1).clamp(max=1).sum().float() / active_labels.size(0)
             
-            return [correct_r1/batch_size, correct_r3/batch_size, correct_r5/batch_size], \
+            return [correct_r1/batch_size, correct_r2/batch_size, correct_r3/batch_size], \
                    [r1_mlm.cpu().item(), r2_mlm.cpu().item(), r3_mlm.cpu().item()]
         
-        return [correct_r1/batch_size, correct_r3/batch_size, correct_r5/batch_size], [0, 0, 0]
+        return [correct_r1/batch_size, correct_r2/batch_size, correct_r3/batch_size], [0, 0, 0]
    
 
     def forward(self, motion, text_mask=None, motion_mask=None, text_id=None):
@@ -1157,7 +1157,18 @@ class Dualsem_encoderv3(nn.Module):
             active_loss = (labels != -100).view(-1)
             active_logits = logits.view(-1, self.vocab_size)[active_loss]
             active_labels = labels.view(-1)[active_loss]
-            mlm_loss = loss_fct(active_logits, active_labels.long())
+            if 0 in active_labels.shape:
+                mlm_loss = torch.tensor(0.0).to(motion.device)
+            else:
+                # mlm_loss = loss_fct(active_logits, active_labels.long())
+                try:
+                    mlm_loss = loss_fct(active_logits, active_labels.long())
+                    # 检查loss是否为NaN
+                    if torch.any(torch.isnan(mlm_loss)):
+                        mlm_loss = torch.tensor(0.0).to(motion.device)
+                except:
+                    # 捕获任何可能的计算错误
+                    mlm_loss = torch.tensor(0.0).to(motion.device)
             # 对比损失
             text_feature_pooler = self.text_motion_proj(text_feature_pooler)
             contrastive_loss = self.contrastive_loss(motion_feature_global, text_feature_pooler, text_id)

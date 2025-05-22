@@ -1,7 +1,7 @@
 import os
 import json
 import re
-
+import time
 import numpy as np
 import torch
 import torch.optim as optim
@@ -67,8 +67,13 @@ args = eval_trans.EasyDict(train_args_dict)
 # os.makedirs(args.run_dir)
 
 ##### ---- Logger ---- #####
-logger = utils_model.get_logger(args.run_dir)
-writer = SummaryWriter(args.run_dir)
+timestamp = time.strftime("%Y%m%d-%H%M%S")
+logs_dir = os.path.join(args.run_dir, f'logs_{timestamp}')
+os.makedirs(logs_dir, exist_ok=True)
+logger = utils_model.get_logger(args.run_dir,logs_dir)
+# Create timestamped subdirectories in run_dir
+
+writer = SummaryWriter(logs_dir)
 logger.info(json.dumps(vars(args), indent=4, sort_keys=True))
 
 
