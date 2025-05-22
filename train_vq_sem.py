@@ -266,7 +266,10 @@ for nb_iter in range(1, args.total_iter + 1):
         avg_recons, avg_perplexity, avg_commit, avg_contrastive, avg_mlm = 0., 0., 0., 0., 0.
 
     if nb_iter % args.eval_iter==0 :
-        best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger, best_mpjpe = eval_trans.evaluation_vqvae(args.run_dir, val_loader, net, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, eval_wrapper=eval_wrapper, best_mpjpe=best_mpjpe)
+        if args.lgvq >= 1:
+            torch.save({'net' : net.state_dict()}, os.path.join(args.run_dir, f'net_iter_{nb_iter}.pth'))
+        else:
+            best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, writer, logger, best_mpjpe = eval_trans.evaluation_vqvae(args.run_dir, val_loader, net, logger, writer, nb_iter, best_fid, best_iter, best_div, best_top1, best_top2, best_top3, best_matching, eval_wrapper=eval_wrapper, best_mpjpe=best_mpjpe)
         if args.freeze_encdec != 0 and args.lgvq != 0:
             net = freeze_encdec(net)
         

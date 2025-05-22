@@ -88,7 +88,10 @@ class VQVAE_251(nn.Module):
         x_encoder = self.encoder(x_in, motion_mask)
         motion = x_encoder.permute(0,2,1)
         # breakpoint()
-        # motion_mask = motion_mask[:, ::4].clone()
+        if self.args.down_t == 2:
+            motion_mask = motion_mask[:, ::4].clone()
+        else:
+            motion_mask = motion_mask[:, ::2].clone()
         return self.lgvq_encoder.text_motion_topk(motion, text, text_mask=text_mask, motion_mask=motion_mask, topk=topk)
 
 
@@ -183,7 +186,7 @@ class HumanVQVAE(nn.Module):
         return x_out
     
     def text_motion_topk(self, motion, text, text_mask=None, motion_mask=None, topk=5):
-        return self.vqvae.text_motion_topk(motion, text, text_mask, motion_mask, topk)
+        return self.vqvae.text_motion_topk(motion, text, text_mask=text_mask, motion_mask=motion_mask, topk=topk)
 
 import torch.nn as nn
 from models.encdec import Encoder, Decoder

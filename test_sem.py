@@ -158,7 +158,6 @@ for i in tqdm(range(1)):
     
     with torch.no_grad():
         # for i in range(len(gt_parts[0])):
-        breakpoint()
         result = net.text_motion_topk(gt_motion, motion_mask=gt_motion_mask, topk=5, text_mask=text_mask, text=text)
     global_R, pred_R = result
     R1.append(global_R)
