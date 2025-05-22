@@ -125,7 +125,7 @@ def evaluation_vqvae(out_dir, val_loader, net, logger, writer, nb_iter, best_fid
             codebook = net.vqvae.quantizer.codebook#codebook.shape:(512, 1024)
             #取 codebook中index对应的就是对应的特征
 
-            p = 0.8 
+            p = 0.9
             mask = torch.bernoulli(p * torch.ones(index.shape,
                                                          device=index.device))
           

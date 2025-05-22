@@ -19,21 +19,23 @@ class Text2Motion_Transformer(nn.Module):
                 semantic_flag=False,
                 semantic_interleaved_flag=False,
                 dual_head_flag=False,
-                semantic_len=50):
+                semantic_len=50,
+                uncond_prob=0):
         super().__init__()
         
         if dual_head_flag:
-            self.trans_base = CrossCondTransDualBase(num_vq, embed_dim, clip_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate, semantic_len)
+            self.trans_base = CrossCondTransDualBase(num_vq, embed_dim, clip_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate, semantic_len, uncond_prob)
             self.trans_head = CrossCondTransDualHead(num_vq, embed_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate, semantic_len)
         else:
             self.trans_head = CrossCondTransHead(num_vq, embed_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate)
-            self.trans_base = CrossCondTransBase(num_vq, embed_dim, clip_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate)
+            self.trans_base = CrossCondTransBase(num_vq, embed_dim, clip_dim, block_size, num_layers, n_head, drop_out_rate, fc_rate, uncond_prob)
         self.block_size = block_size
         self.num_vq = num_vq
         self.semantic_flag = semantic_flag
         self.semantic_interleaved_flag = semantic_interleaved_flag
         self.dual_head_flag = dual_head_flag
         self.semantic_len = semantic_len
+        self.uncond_prob = uncond_prob
         # Define token ID constants
         # Assuming self.num_vq is the STOP_TOKEN_ID for the combined (semantic+separator+reconstruction) vocabulary.
         # Example: self.num_vq = 1025 means tokens 0-1024 are valid, 1025 is STOP.
@@ -969,15 +971,19 @@ class CrossCondTransBase(nn.Module):
                 num_layers=2, 
                 n_head=8, 
                 drop_out_rate=0.1, 
-                fc_rate=4):
+                fc_rate=4,
+                uncond_prob=0):
         super().__init__()
         self.tok_emb = nn.Embedding(num_vq + 2, embed_dim)
         self.cond_emb = nn.Linear(clip_dim, embed_dim)
+        if uncond_prob > 0:
+            self.register_buffer("uncond_embedding", nn.Parameter(torch.randn(1, embed_dim) / embed_dim ** 0.5))
         self.pos_embedding = nn.Embedding(block_size, embed_dim)
         self.drop = nn.Dropout(drop_out_rate)
         # transformer block
         self.blocks = nn.Sequential(*[Block(embed_dim, block_size, n_head, drop_out_rate, fc_rate) for _ in range(num_layers)])
         self.pos_embed = pos_encoding.PositionEmbedding(block_size, embed_dim, 0.0, False)
+        self.uncond_prob = uncond_prob
 
         self.block_size = block_size
 
@@ -996,6 +1002,10 @@ class CrossCondTransBase(nn.Module):
             module.weight.data.fill_(1.0)
     
     def forward(self, idx, clip_feature, key_padding_mask=None):
+        if self.uncond_prob > 0:
+            uncond_prob = torch.rand(clip_feature.shape[0], device=clip_feature.device)
+            uncond_prob = uncond_prob < self.uncond_prob
+            clip_feature = torch.where(uncond_prob, self.uncond_embedding, clip_feature)
         if len(idx) == 0:
             token_embeddings = self.cond_emb(clip_feature).unsqueeze(1)
         else:
@@ -1021,13 +1031,17 @@ class CrossCondTransDualBase(nn.Module):
                 n_head=8, 
                 drop_out_rate=0.1, 
                 fc_rate=4,
-                semantic_len = 50):
+                semantic_len = 50,
+                uncond_prob=0):
         super().__init__()
         self.tok_emb = nn.ModuleList([nn.Embedding(num_vq + 2, embed_dim) for _ in range(2)])
         self.cond_emb = nn.Linear(clip_dim, embed_dim)
         self.pos_embedding = nn.Embedding(block_size, embed_dim)
         self.drop = nn.Dropout(drop_out_rate)
+        if uncond_prob > 0:
+            self.register_buffer("uncond_embedding", nn.Parameter(torch.randn(1, embed_dim) / embed_dim ** 0.5))
         self.semantic_len = semantic_len
+        self.uncond_prob = uncond_prob
         # transformer block
         self.blocks = nn.ModuleList([Block(embed_dim, block_size, n_head, drop_out_rate, fc_rate) for _ in range(num_layers)])
         self.pos_embed = pos_encoding.PositionEmbedding(block_size, embed_dim, 0.0, False)
@@ -1055,7 +1069,14 @@ class CrossCondTransDualBase(nn.Module):
 
         condition_embedding = self.cond_emb(clip_feature).unsqueeze(1) # (B, 1, C)
         mask_for_blocks = None
-
+        if self.uncond_prob > 0:
+            uncond_prob = torch.rand(clip_feature.shape[0], device=clip_feature.device)
+            uncond_prob = uncond_prob < self.uncond_prob
+            # 扩展 uncond_prob 的维度以匹配 condition_embedding 的维度
+            uncond_prob = uncond_prob.unsqueeze(1).unsqueeze(2)  # (B, 1, 1)
+            condition_embedding = torch.where(uncond_prob, self.uncond_embedding, condition_embedding)
+        # else:
+            
         if len(idx) == 0:
             token_embeddings = condition_embedding
             # Mask for blocks is just for the condition embedding (i.e., False, do not mask)

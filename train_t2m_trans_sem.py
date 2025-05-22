@@ -137,7 +137,8 @@ trans_encoder = trans.Text2Motion_Transformer(num_vq=num_vq_trans,
                                 fc_rate=args.ff_rate,
                                 semantic_flag=semantic_flag,
                                 semantic_len=semantic_len,
-                                dual_head_flag=(args.sample_way == 2))
+                                dual_head_flag=(args.sample_way == 2),
+                                uncond_prob=args.classfg)
 
 
 if args.resume_trans is not None:
@@ -229,14 +230,14 @@ while nb_iter <= args.total_iter:
     bs = m_tokens.shape[0]
     target = m_tokens    # (bs, 26)
     target = target.cuda()
-    if args.classfg == 0:
-        text = clip.tokenize(clip_text, truncate=True).cuda()
-    else:
-        # 生成mask来决定哪些样本的文本被替换为空
-        mask = torch.bernoulli(args.classfg * torch.ones(len(clip_text), device='cuda'))
-        # 创建新的文本列表，将被mask的文本替换为空字符串
-        masked_text = ["" if mask[i] else clip_text[i] for i in range(len(clip_text))]
-        text = clip.tokenize(masked_text, truncate=True).cuda()
+    # if args.classfg == 0:
+    text = clip.tokenize(clip_text, truncate=True).cuda()
+    # else:
+        # # 生成mask来决定哪些样本的文本被替换为空
+        # mask = torch.bernoulli(args.classfg * torch.ones(len(clip_text), device='cuda'))
+        # # 创建新的文本列表，将被mask的文本替换为空字符串
+        # masked_text = ["" if mask[i] else clip_text[i] for i in range(len(clip_text))]
+        # text = clip.tokenize(masked_text, truncate=True).cuda()
         
     feat_clip_text = clip_model.encode_text(text).float()
 
