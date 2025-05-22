@@ -846,7 +846,10 @@ class Dualsem_encoderv3(nn.Module):
             
         # 特征重组
         feature = time_feat
-        sem_idx = self.sem_quantizer.quantize(feature.permute(0,2,1))
+        if self.args.num_quantizers > 1:
+            sem_idx = self.sem_quantizer.quantize(feature.permute(0,2,1))
+        else:
+            sem_idx = self.sem_quantizer.quantize(feature)
         return sem_idx
     
     def text_motion_topk(self, motion, text, motion_mask=None, topk=5, text_mask=None):
