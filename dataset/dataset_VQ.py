@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 
 class VQMotionDataset(data.Dataset):
-    def __init__(self, dataset_name, window_size = 64, unit_length = 4):
+    def __init__(self, dataset_name, window_size = 64, unit_length = 4, test=False):
         self.window_size = window_size
         self.unit_length = unit_length
         self.dataset_name = dataset_name
@@ -37,6 +37,8 @@ class VQMotionDataset(data.Dataset):
         std = np.load(pjoin(self.meta_dir, 'std.npy'))
 
         split_file = pjoin(self.data_root, 'train.txt')
+        if test:
+            split_file = pjoin(self.data_root, 'test.txt')
 
         self.data = []
         self.lengths = []
