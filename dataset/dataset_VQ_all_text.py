@@ -15,7 +15,7 @@ import re
 from functools import partial
 
 class VQMotionDataset(data.Dataset):
-    def __init__(self, dataset_name, window_size = 64, unit_length = 4, strategy='basic', val=False):
+    def __init__(self, dataset_name, window_size = 64, unit_length = 4, strategy='basic', val=False, test=False):
         self.window_size = window_size
         self.unit_length = unit_length
         self.dataset_name = dataset_name
@@ -47,7 +47,8 @@ class VQMotionDataset(data.Dataset):
             split_file = pjoin(self.data_root, 'val.txt')
         else:
             split_file = pjoin(self.data_root, 'train.txt')
-
+        if test:
+            split_file = pjoin(self.data_root, 'test.txt')
         self.data = []
         self.lengths = []
         id_list = []
@@ -411,9 +412,10 @@ def DATALoader(dataset_name,
                num_workers = 8,
                window_size = 64,
                unit_length = 4,
-               val=False):
+               val=False,
+               test=False):
     
-    trainSet = VQMotionDataset(dataset_name, window_size=window_size, unit_length=unit_length, val=val)
+    trainSet = VQMotionDataset(dataset_name, window_size=window_size, unit_length=unit_length, val=val, test=test)
     prob = trainSet.compute_sampling_prob()
     sampler = torch.utils.data.WeightedRandomSampler(prob, num_samples = len(trainSet) * 1000, replacement=True)
     train_loader = torch.utils.data.DataLoader(trainSet,

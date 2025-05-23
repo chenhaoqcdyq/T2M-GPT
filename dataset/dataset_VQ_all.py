@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 
 class VQMotionDataset(data.Dataset):
-    def __init__(self, dataset_name, window_size = 64, unit_length = 4):
+    def __init__(self, dataset_name, window_size = 64, unit_length = 4, test=False):
         self.window_size = window_size
         self.unit_length = unit_length
         self.dataset_name = dataset_name
@@ -37,7 +37,8 @@ class VQMotionDataset(data.Dataset):
         std = np.load(pjoin(self.meta_dir, 'std.npy'))
 
         split_file = pjoin(self.data_root, 'train.txt')
-
+        if test:
+            split_file = pjoin(self.data_root, 'test.txt')
         self.data = []
         self.lengths = []
         id_list = []
@@ -94,9 +95,10 @@ def DATALoader(dataset_name,
                batch_size,
                num_workers = 8,
                window_size = 64,
-               unit_length = 4):
+               unit_length = 4,
+               test=False):
     
-    trainSet = VQMotionDataset(dataset_name, window_size=window_size, unit_length=unit_length)
+    trainSet = VQMotionDataset(dataset_name, window_size=window_size, unit_length=unit_length, test=test)
     prob = trainSet.compute_sampling_prob()
     sampler = torch.utils.data.WeightedRandomSampler(prob, num_samples = len(trainSet) * 1000, replacement=True)
     train_loader = torch.utils.data.DataLoader(trainSet,

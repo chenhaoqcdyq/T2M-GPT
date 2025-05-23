@@ -45,7 +45,8 @@ def update_lr_warm_up(optimizer, nb_iter, warm_up_iter, lr):
 args = option_vq.get_args_parser()
 torch.manual_seed(args.seed)
 ##### ---- Exp dirs ---- #####
-path = "output/00152-t2m-VQVAE_lgvq_cnn_down/VQVAE-VQVAE_lgvq_cnn_down-t2m"
+path = "output/00170-t2m-VQVAE_cnn_down_lgvq/VQVAE-VQVAE_cnn_down_lgvq-t2m"
+# path = "output/00211-t2m-VQVAE_cnn_wodown_lgvq/VQVAE-VQVAE_cnn_wodown_lgvq-t2m"
 json_file = os.path.join(path, 'train_config.json')
 checkpoint_path = os.path.join(path, 'net_last.pth')
 with open(json_file, 'r') as f:
@@ -92,20 +93,25 @@ logger.info(f'Training on {args.dataname}, motions are with {args.nb_joints} joi
 
 wrapper_opt = get_opt(dataset_opt_path, torch.device('cuda'))
 eval_wrapper = EvaluatorModelWrapper(wrapper_opt)
+
 if args.all_motion:
     if args.lgvq == 1:
         import dataset.dataset_VQ_all_text as dataset_VQ
+        print("dataset_VQ_all_text")
     else:
         import dataset.dataset_VQ_all as dataset_VQ
+        print("dataset_VQ_all")
 else:
     import dataset.dataset_VQ as dataset_VQ
+    print("dataset_VQ")
 ##### ---- Dataloader ---- #####
-train_loader = dataset_VQ.DATALoader(args.dataname,
+test_loader = dataset_VQ.DATALoader(args.dataname,
                                         32,
                                         window_size=args.window_size,
-                                        unit_length=2**args.down_t)
+                                        unit_length=2**args.down_t,
+                                        test=True)
 
-train_loader_iter = dataset_VQ.cycle(train_loader)
+test_loader_iter = dataset_VQ.cycle(test_loader)
 
 # val_loader = dataset_TM_eval.DATALoader(args.dataname, False,
 #                                         32,
@@ -140,35 +146,109 @@ net.cuda()
 
 # if args.freeze_encdec != 0 and args.lgvq != 0:
 #     net = freeze_encdec(net)
+
+# Initialize lists to store results across multiple runs
+R1_all_runs = []
+R2_all_runs = []
+repeat_time = 5
+
+print(f"Starting evaluation with {repeat_time} repetitions...")
+
+for run_idx in range(repeat_time):
+    print(f"Run {run_idx + 1}/{repeat_time}")
     
-R1 = []
-R2 = []
-for i in tqdm(range(1)):
-    gt_motion = next(train_loader_iter)
-    if isinstance(gt_motion, tuple) or isinstance(gt_motion, list):
-        if len(gt_motion) == 2:
-            gt_motion, gt_motion_mask = gt_motion
-            text_mask, name = None, None
-        elif len(gt_motion) == 3:
-            gt_motion, gt_motion_mask, text_mask = gt_motion
-        elif len(gt_motion) == 4:
-            gt_motion, gt_motion_mask, text_mask, name = gt_motion
-        elif len(gt_motion) == 5:
-            gt_motion, gt_motion_mask, text_mask, name, text = gt_motion
-    else:
-        gt_motion_mask, text_mask, name = None, None, None
-    gt_motion = gt_motion.cuda().float() # (bs, 64, dim)
-    if gt_motion_mask is not None:
-        gt_motion_mask = gt_motion_mask.cuda().long() # (bs, 64)
+    # Reset lists for current run
+    R1_current_run = []
+    R2_current_run = []
     
-    with torch.no_grad():
-        # for i in range(len(gt_parts[0])):
-        result = net.text_motion_topk(gt_motion, motion_mask=gt_motion_mask, topk=5, text_mask=text_mask, text=text)
-    global_R, pred_R = result
-    R1.append(global_R)
-    R2.append(pred_R)
-    print(result)
-R1_mean = np.mean(np.array(R1), axis=0)
-R2_mean = np.mean(np.array(R2), axis=0)
-print("R1 均值:", R1_mean)
-print("R2 均值:", R2_mean)
+    # Evaluate on the entire test dataset for current run
+    for i in tqdm(range(len(test_loader)), desc=f"Run {run_idx + 1}"):
+        gt_motion = next(test_loader_iter)
+        if isinstance(gt_motion, tuple) or isinstance(gt_motion, list):
+            if len(gt_motion) == 2:
+                gt_motion, gt_motion_mask = gt_motion
+                text_mask, name, text = None, None, None
+            elif len(gt_motion) == 3:
+                gt_motion, gt_motion_mask, text_mask = gt_motion
+                name, text = None, None
+            elif len(gt_motion) == 4:
+                gt_motion, gt_motion_mask, text_mask, name = gt_motion
+                text = None
+            elif len(gt_motion) == 5:
+                gt_motion, gt_motion_mask, text_mask, name, text = gt_motion
+        else:
+            gt_motion_mask, text_mask, name, text = None, None, None, None
+            
+        gt_motion = gt_motion.cuda().float() # (bs, 64, dim)
+        if gt_motion_mask is not None:
+            gt_motion_mask = gt_motion_mask.cuda().long() # (bs, 64)
+        
+        with torch.no_grad():
+            result = net.text_motion_topk(gt_motion, motion_mask=gt_motion_mask, topk=5, text_mask=text_mask, text=text)
+        
+        global_R, pred_R = result
+        R1_current_run.append(global_R)
+        R2_current_run.append(pred_R)
+    
+    # Calculate mean for current run
+    R1_run_mean = np.mean(np.array(R1_current_run), axis=0)
+    R2_run_mean = np.mean(np.array(R2_current_run), axis=0)
+    
+    R1_all_runs.append(R1_run_mean)
+    R2_all_runs.append(R2_run_mean)
+    
+    print(f"Run {run_idx + 1} - R1 mean: {R1_run_mean}")
+    print(f"Run {run_idx + 1} - R2 mean: {R2_run_mean}")
+
+# Calculate final statistics across all runs
+R1_all_runs = np.array(R1_all_runs)
+R2_all_runs = np.array(R2_all_runs)
+
+# Calculate mean and confidence intervals
+R1_final_mean = np.mean(R1_all_runs, axis=0)
+R2_final_mean = np.mean(R2_all_runs, axis=0)
+
+R1_std = np.std(R1_all_runs, axis=0)
+R2_std = np.std(R2_all_runs, axis=0)
+
+R1_conf = R1_std * 1.96 / np.sqrt(repeat_time)
+R2_conf = R2_std * 1.96 / np.sqrt(repeat_time)
+
+print("\n" + "="*50)
+print("FINAL RESULTS:")
+print("="*50)
+print(f"R1 final mean: {R1_final_mean}")
+print(f"R1 confidence interval: ±{R1_conf}")
+print(f"R2 final mean: {R2_final_mean}")
+print(f"R2 confidence interval: ±{R2_conf}")
+
+# Log detailed results
+logger.info("="*50)
+logger.info("FINAL EVALUATION RESULTS")
+logger.info("="*50)
+logger.info(f"Number of repetitions: {repeat_time}")
+logger.info(f"R1 final mean: {R1_final_mean}")
+logger.info(f"R1 std: {R1_std}")
+logger.info(f"R1 confidence interval (95%): ±{R1_conf}")
+logger.info(f"R2 final mean: {R2_final_mean}")
+logger.info(f"R2 std: {R2_std}")
+logger.info(f"R2 confidence interval (95%): ±{R2_conf}")
+
+# Format final message similar to VQ_sem_eval.py
+if len(R1_final_mean) >= 3 and len(R2_final_mean) >= 3:
+    msg_final = (f"R1 Results - "
+                f"Top1: {R1_final_mean[0]:.3f}, conf: {R1_conf[0]:.3f}, "
+                f"Top2: {R1_final_mean[1]:.3f}, conf: {R1_conf[1]:.3f}, "
+                f"Top3: {R1_final_mean[2]:.3f}, conf: {R1_conf[2]:.3f}, "
+                f"R2 Results - "
+                f"Top1: {R2_final_mean[0]:.3f}, conf: {R2_conf[0]:.3f}, "
+                f"Top2: {R2_final_mean[1]:.3f}, conf: {R2_conf[1]:.3f}, "
+                f"Top3: {R2_final_mean[2]:.3f}, conf: {R2_conf[2]:.3f}, "
+                )
+else:
+    msg_final = (f"R1 Results: {R1_final_mean}, conf: {R1_conf} | "
+                f"R2 Results: {R2_final_mean}, conf: {R2_conf}")
+
+logger.info(msg_final)
+print("\nFormatted Results:")
+print(msg_final)
