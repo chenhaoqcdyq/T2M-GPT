@@ -88,10 +88,12 @@ class VQVAE_251(nn.Module):
         x_encoder = self.encoder(x_in, motion_mask)
         motion = x_encoder.permute(0,2,1)
         # breakpoint()
-        if self.args.down_t == 2:
-            motion_mask = motion_mask[:, ::4].clone()
-        else:
-            motion_mask = motion_mask[:, ::2].clone()
+        
+        if self.args.down_vqvae == 1:
+            if self.args.down_t == 2:
+                motion_mask = motion_mask[:, ::4].clone()
+            else:
+                motion_mask = motion_mask[:, ::2].clone()
         return self.lgvq_encoder.text_motion_topk(motion, text, text_mask=text_mask, motion_mask=motion_mask, topk=topk)
 
 

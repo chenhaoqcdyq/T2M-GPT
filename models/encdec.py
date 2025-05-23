@@ -879,8 +879,8 @@ class Dualsem_encoderv3(nn.Module):
         B, T = motion.shape[0], motion.shape[1]
     
         # 数据增强
-        if self.training:
-            motion = self.motion_aug(motion)
+        # if self.training:
+        #     motion = self.motion_aug(motion)
             
         # 时间特征处理
         time_feat = motion
